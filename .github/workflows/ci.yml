@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      # The spikes are the real acceptance gate (ADR-0010) — every one is
+      # hardware-free and must stay runnable by anyone.
+      - run: cargo run --release --bin spike0
+      - run: cargo run --release --bin spike1
+      - run: cargo run --release --bin spike2
+      - run: cargo run --release --bin spike3
+      - run: cargo run --release --bin spike4
+      - run: cargo run --release --bin spike5

@@ -107,4 +107,4 @@ Nothing before S6 touches hardware; the React app is S8, last.
 
 ## License
 
-TBD
+MIT — see [LICENSE](LICENSE).
