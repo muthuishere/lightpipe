@@ -12,8 +12,8 @@ S5 — chunked gzip pipeline (ADR-0006), integrity + resume (ADR-0005),
    source               first-chunk ratio 0.281  ->  gzip
    blob (mp4/jpg/zip)   first-chunk ratio 1.000  ->  raw
 
-   64 MB incompressible: gzip-everything 0.80 s (79.7 MB/s, +0.02% size) vs probe-only 3.1 ms
-   CPU saved by the probe: 257.8x (0.80 s per 64 MB, ~12.8 s per GB) and gzip on an
+   64 MB incompressible: gzip-everything 0.79 s (81.2 MB/s, +0.02% size) vs probe-only 3.1 ms
+   CPU saved by the probe: 257.5x (0.79 s per 64 MB, ~12.6 s per GB) and gzip on an
    already-compressed file only made it +0.02% bigger anyway.
 
 2. compression cost of chunking vs whole-file gzip (ADR-0006 estimates 1-3%)
@@ -25,12 +25,12 @@ S5 — chunked gzip pipeline (ADR-0006), integrity + resume (ADR-0005),
    source (rust-like)       8.0 MB    2281084      2514798     10.25%      64  0.272
                             8.0 MB                 2340955      2.62%     256  
                             8.0 MB                 2294545      0.59%    1024  
-   repo (real .rs/.md)      0.2 MB      74266        76932      3.59%      64  0.301
-                            0.2 MB                   74266      0.00%     256  
-                            0.2 MB                   74266      0.00%    1024  
-   blob (incompressible)    8.0 MB    8389951      8388608     -0.02%      64  1.000  (raw: probe said don't bother)
-                            8.0 MB                 8388608     -0.02%     256  
-                            8.0 MB                 8388608     -0.02%    1024  
+   repo (real .rs/.md)      1.1 MB     293344       309534      5.52%      64  0.265
+                            1.1 MB                  298174      1.65%     256  
+                            1.1 MB                  295065      0.59%    1024  
+   blob (incompressible)    8.0 MB    8389951      8392832      0.03%      64  1.000
+                            8.0 MB                 8390624      0.01%     256  
+                            8.0 MB                 8390112      0.00%    1024  
 
    worst compressible-corpus penalty at the 256 KB default: 2.93%
    verdict: ADR-0006's 1-3% estimate is CONFIRMED.
@@ -52,15 +52,15 @@ S5 — chunked gzip pipeline (ADR-0006), integrity + resume (ADR-0005),
 
 5. 1024 MB synthetic file — memory must stay bounded (ADR-0006/0008)
 ----------------------------------------------------------------------
-   manifest: 4096 chunks of 256 KB, encoding gzip, built in 38.5 s (27 MB/s)
+   manifest: 4096 chunks of 256 KB, encoding gzip, built in 37.6 s (27 MB/s)
    manifest cost: 180224 bytes (0.17 MB) — 0.01678% of the payload
-   transferred out-of-order (odds then evens) in 40.0 s; verified whole-file BLAKE3 in 0.5 s
+   transferred out-of-order (odds then evens) in 39.5 s; verified whole-file BLAKE3 in 0.5 s
    compressed size on the wire: 289.4 MB of 1024.0 MB (28.3% ratio)
 
    peak RSS before the run      :      1.7 MB
-   peak RSS after manifest pass :      3.5 MB
-   peak RSS after transfer      :      4.6 MB
-   peak RSS after whole verify  :      4.6 MB
-   => 4.6 MB peak for a 1024 MB file = 0.0045x. Bounded: memory tracks chunk size,
+   peak RSS after manifest pass :      2.6 MB
+   peak RSS after transfer      :      3.8 MB
+   peak RSS after whole verify  :      3.8 MB
+   => 3.8 MB peak for a 1024 MB file = 0.0037x. Bounded: memory tracks chunk size,
       not file size. ADR-0006's bounded-memory claim holds.
    display code: QSPFZ9

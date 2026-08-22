@@ -26,7 +26,7 @@ class OpticalSender {
 
   manifest(): {
     totalBytes: number; chunkSize: number; chunkCount: number;
-    compressed: boolean;    // false when the probe found the input incompressible
+    compressed: boolean;    // ADR-0014: always true. Reserved wire field, not a branch.
     displayCode: string;    // 6 chars, BLAKE3 — the human compares this
   };
 

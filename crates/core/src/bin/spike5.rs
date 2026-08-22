@@ -11,8 +11,8 @@
 //! native stand-in for the ADR-0008 OPFS sync access handle: `write(data, {at})`.
 
 use optical_core::pipeline::{
-    gzip, probe, ByteSource, ChunkFountain, Config, Encoder, Encoding, PacketCollector,
-    PacketEmitter, RandomSink, Receiver, ResumeCode, SparseSink, StubFountain,
+    gzip, ByteSource, ChunkFountain, Config, Encoder, Encoding, PacketCollector, PacketEmitter,
+    RandomSink, Receiver, ResumeCode, SparseSink, StubFountain,
 };
 use std::fmt::Write as _;
 use std::fs::File;
@@ -326,7 +326,6 @@ fn main() {
     r.line("       CompressionStream('gzip') -> flate2 gunzip     = 300,000 B byte-identical");
     r.line("     so the ADR-0007 browser build can read and write this wire format unchanged.");
 
-    section_probe(&mut r);
     section_penalty(&mut r);
     section_out_of_order(&mut r);
     section_resume(&mut r);
@@ -349,65 +348,6 @@ fn main() {
     let _ = std::fs::create_dir_all("artifacts");
     std::fs::write("artifacts/s5-pipeline.txt", &r.buf).expect("write artifact");
     println!("\nartifact: artifacts/s5-pipeline.txt");
-}
-
-// --- 1. compressibility probe ----------------------------------------------
-
-fn section_probe(r: &mut Report) {
-    r.head("1. compressibility probe (ADR-0006: ratio worse than 0.95 => whole transfer raw)");
-    let cfg = Config::default();
-    let mb = 64usize * 1024 * 1024;
-
-    for (name, data) in [
-        ("text", text_corpus(cfg.chunk_size, 1)),
-        ("source", source_corpus(cfg.chunk_size, 2)),
-        ("blob (mp4/jpg/zip)", blob_corpus(cfg.chunk_size, 3)),
-    ] {
-        let p = probe(&data, &cfg);
-        rl!(
-            r,
-            "   {:<20} first-chunk ratio {:.3}  ->  {}",
-            name,
-            p.ratio,
-            p.encoding.as_str()
-        );
-    }
-
-    // CPU actually saved: compress 64 MB of incompressible data the naive way vs
-    // probing one 256 KB chunk and then shipping raw.
-    let blob = blob_corpus(mb, 4);
-    let t0 = Instant::now();
-    let mut total = 0usize;
-    for c in blob.chunks(cfg.chunk_size) {
-        total += gzip(c, cfg.level).len();
-    }
-    let naive = t0.elapsed();
-    let t1 = Instant::now();
-    let p = probe(&blob[..cfg.chunk_size], &cfg);
-    let probed = t1.elapsed();
-    assert_eq!(p.encoding, Encoding::Raw);
-
-    r.line("");
-    rl!(
-        r,
-        "   64 MB incompressible: gzip-everything {:.2} s ({:.1} MB/s, {:+.2}% size) vs probe-only {:.1} ms",
-        naive.as_secs_f64(),
-        mib(mb as u64) / naive.as_secs_f64(),
-        (total as f64 / mb as f64 - 1.0) * 100.0,
-        probed.as_secs_f64() * 1000.0
-    );
-    rl!(
-        r,
-        "   CPU saved by the probe: {:.1}x ({:.2} s per 64 MB, ~{:.1} s per GB) and gzip on an",
-        naive.as_secs_f64() / probed.as_secs_f64(),
-        naive.as_secs_f64() - probed.as_secs_f64(),
-        (naive.as_secs_f64() - probed.as_secs_f64()) * 16.0
-    );
-    rl!(
-        r,
-        "   already-compressed file only made it {:+.2}% bigger anyway.",
-        (total as f64 / mb as f64 - 1.0) * 100.0
-    );
 }
 
 // --- 2. compression penalty of chunking ------------------------------------

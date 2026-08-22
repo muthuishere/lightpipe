@@ -1,6 +1,7 @@
 //! S5 — the chunking + integrity layer of ADR-0006.
 //!
-//! Split the payload into fixed chunks (256 KB default), gzip each **independently**,
+//! Split the payload into fixed chunks (256 KB default), gzip each **independently**
+//! and **unconditionally** (ADR-0014 — no probe, no raw mode, no branch),
 //! and describe the whole transfer with a manifest. Each chunk is an autonomous unit:
 //! it is fountain-coded on its own (ADR-0004), verified on its own, and written into
 //! its own byte offset in the output the moment it completes (ADR-0008). A transfer
@@ -27,8 +28,9 @@ use std::io::{Read, Write};
 /// that a chunk is a meaningful unit of progress and of memory.
 pub const DEFAULT_CHUNK_SIZE: usize = 256 * 1024;
 
-/// ADR-0006: "if the first chunk's compression ratio is worse than ~0.95 the whole
-/// transfer switches to raw". Ratio is `compressed / plain`, so lower is better.
+/// Ratio at which ADR-0006's withdrawn probe would have switched a transfer to raw.
+/// **Not on the transfer path** — ADR-0014 always compresses. Retained only so the
+/// superseded S5 measurement (`spike5`) still builds; delete it with that section.
 pub const PROBE_RATIO_THRESHOLD: f64 = 0.95;
 
 /// Deflate level. 6 is `Compression::default()` and is what `CompressionStream('gzip')`
@@ -38,6 +40,7 @@ pub const DEFAULT_LEVEL: u32 = 6;
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
     pub chunk_size: usize,
+    /// Only read by the withdrawn [`probe`] (ADR-0014). The transfer path ignores it.
     pub probe_threshold: f64,
     pub level: u32,
 }
@@ -60,9 +63,12 @@ impl Config {
     }
 }
 
-/// How every chunk of this transfer is carried on the wire. Decided once, up front,
-/// by the probe — never per chunk (a mixed transfer would need a per-chunk flag in
-/// every frame header for no measurable gain).
+/// How every chunk of this transfer is carried on the wire.
+///
+/// Since ADR-0014 this is invariably [`Encoding::Gzip`]: every chunk of every
+/// transfer is compressed, with no probe and no branch. `Raw` is kept because the
+/// wasm/JS manifest contract is frozen around the flag — treat it as a **reserved
+/// wire value that the encoder never produces**, not as a mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
     Raw,
@@ -111,8 +117,11 @@ pub struct Probe {
     pub probed_bytes: usize,
 }
 
-/// Test-compress the first chunk only. mp4/jpg/zip come back at ~1.00 and the whole
-/// transfer switches to raw, which skips deflate on every remaining chunk.
+/// **Withdrawn (ADR-0014).** Test-compresses the first chunk and reports what the
+/// old raw/gzip switch would have said. Nothing on the transfer path calls this: the
+/// compressor runs 600x-4,500x faster than the optical channel it feeds, so the
+/// branch it saved was never worth having. Kept only so S5's superseded measurement
+/// still runs.
 pub fn probe(first_chunk: &[u8], cfg: &Config) -> Probe {
     if first_chunk.is_empty() {
         return Probe {
@@ -229,11 +238,20 @@ pub trait RandomSink {
 /// A sparse in-memory sink: only the byte ranges actually written exist. Models the
 /// out-of-order random-access write without pretending a transfer is an append, and
 /// without allocating the output up front.
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct SparseSink {
     pages: std::collections::BTreeMap<u64, Vec<u8>>,
     page: usize,
     len: u64,
+}
+
+/// Hand-written rather than derived: a derived `Default` leaves `page` at 0, and
+/// the first `write_at` then divides by zero. Found by the end-to-end integration,
+/// which reached the sink through `Option::unwrap_or_default()`.
+impl Default for SparseSink {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SparseSink {
@@ -325,7 +343,6 @@ pub struct Encoder<S: ByteSource> {
     src: S,
     cfg: Config,
     manifest: Manifest,
-    probe: Probe,
 }
 
 impl<S: ByteSource> Encoder<S> {
@@ -336,28 +353,16 @@ impl<S: ByteSource> Encoder<S> {
 
         let mut buf = vec![0u8; chunk_size];
 
-        // Probe on the first chunk only (ADR-0006).
-        let first = if count > 0 {
-            src.read_at(0, &mut buf)
-        } else {
-            0
-        };
-        let probe = probe(&buf[..first], &cfg);
-
         let mut chunks = Vec::with_capacity(count);
         let mut file_hasher = Hasher::new();
         for i in 0..count {
-            let n = if i == 0 {
-                first
-            } else {
-                src.read_at(i as u64 * chunk_size as u64, &mut buf)
-            };
+            let n = src.read_at(i as u64 * chunk_size as u64, &mut buf);
             let plain = &buf[..n];
             file_hasher.update(plain);
-            let stored_len = match probe.encoding {
-                Encoding::Raw => n,
-                Encoding::Gzip => gzip(plain, cfg.level).len(),
-            };
+            // Unconditional (ADR-0014). Incompressible input grows by gzip's framing
+            // — 26 B on a 128 KB chunk, 0.02% — which is noise against a channel
+            // that spends 26% of its bits on fiducials.
+            let stored_len = gzip(plain, cfg.level).len();
             chunks.push(ChunkMeta {
                 index: i as u32,
                 plain_len: n as u32,
@@ -370,24 +375,15 @@ impl<S: ByteSource> Encoder<S> {
             total_size: total,
             chunk_size: chunk_size as u32,
             chunk_count: count as u32,
-            encoding: probe.encoding,
+            encoding: Encoding::Gzip,
             chunks,
             file_hash: *file_hasher.finalize().as_bytes(),
         };
-        Self {
-            src,
-            cfg,
-            manifest,
-            probe,
-        }
+        Self { src, cfg, manifest }
     }
 
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
-    }
-
-    pub fn probe_result(&self) -> Probe {
-        self.probe
     }
 
     /// The bytes that go on the wire for chunk `index` — i.e. what the fountain
@@ -403,10 +399,7 @@ impl<S: ByteSource> Encoder<S> {
             .src
             .read_at(self.manifest.chunk_offset(index), &mut buf);
         buf.truncate(n);
-        Ok(match self.manifest.encoding {
-            Encoding::Raw => buf,
-            Encoding::Gzip => gzip(&buf, self.cfg.level),
-        })
+        Ok(gzip(&buf, self.cfg.level))
     }
 }
 
@@ -483,10 +476,7 @@ impl<K: RandomSink> Receiver<K> {
         if stored.len() != meta.stored_len as usize {
             return Err(PipelineError::WrongLength);
         }
-        let plain = match self.manifest.encoding {
-            Encoding::Raw => stored.to_vec(),
-            Encoding::Gzip => gunzip(stored, meta.plain_len as usize)?,
-        };
+        let plain = gunzip(stored, meta.plain_len as usize)?;
         if plain.len() != meta.plain_len as usize {
             return Err(PipelineError::WrongLength);
         }
@@ -687,12 +677,16 @@ impl ResumeCode {
 
 // ---------------------------------------------------------------------------
 // SEAM: the fountain layer (ADR-0004, crates/core/src/fountain.rs) plugs in here.
+//
+// [`RaptorqFountain`] is the real one and the default path. [`StubFountain`] is
+// kept as a coding-free baseline: it has no coding gain and needs every distinct
+// block, so a test that passes on both proves the pipeline depends on nothing
+// beyond this seam.
 // ---------------------------------------------------------------------------
 
-/// Turns one chunk payload into an **endless** packet stream. The real RaptorQ
-/// encoder from `fountain.rs` implements this; [`StubFountain`] below is the
-/// deterministic stand-in this spike tests against so the two layers can be built
-/// in parallel and integrated later.
+/// Turns one chunk payload into an **endless** packet stream. [`RaptorqFountain`]
+/// is the shipping implementation (ADR-0004); [`StubFountain`] is the
+/// coding-free stand-in kept for baseline tests.
 pub trait PacketEmitter {
     /// Never returns `None`: the sender loops forever until the human stops it (ADR-0005).
     fn next_packet(&mut self) -> Vec<u8>;
@@ -712,6 +706,155 @@ pub trait ChunkFountain {
     type Collector: PacketCollector;
     fn emitter(&self, payload: &[u8]) -> Self::Emitter;
     fn collector(&self, stored_len: usize) -> Self::Collector;
+}
+
+/// The real fountain (ADR-0004): one RaptorQ source block per chunk (ADR-0006).
+///
+/// This is the **default** path — [`StubFountain`] below is kept only as a
+/// coding-free baseline for tests that want to prove the pipeline depends on no
+/// fountain property beyond "packets in, payload out, packets remaining".
+///
+/// `capacity` is the frame payload capacity in bytes, i.e. what one rendered
+/// frame can carry (`FrameSpec::capacity_bytes`). Every emitted packet is
+/// exactly that long, including RaptorQ's own 4-byte FEC Payload ID, so a frame
+/// payload *is* a packet and needs no further framing.
+#[derive(Clone, Copy, Debug)]
+pub struct RaptorqFountain {
+    pub capacity: usize,
+}
+
+/// The default fountain of the pipeline. RaptorQ, per ADR-0004.
+pub type DefaultFountain = RaptorqFountain;
+
+impl RaptorqFountain {
+    pub fn new(capacity: usize) -> Self {
+        Self { capacity }
+    }
+
+    /// Symbol size actually carried by each packet.
+    pub fn symbol_size(&self) -> usize {
+        self.capacity
+            .saturating_sub(crate::fountain::PACKET_HEADER_BYTES)
+    }
+
+    /// Fallible form of [`ChunkFountain::emitter`] — the trait cannot return a
+    /// `Result` without breaking the seam every earlier spike is written against.
+    pub fn try_emitter(&self, payload: &[u8]) -> Result<RaptorqEmitter, FountainSetupError> {
+        crate::fountain::Transmitter::new(payload, self.capacity)
+            .map(|tx| RaptorqEmitter { tx })
+            .map_err(FountainSetupError)
+    }
+
+    /// The 12 OTI bytes for a chunk of `stored_len` bytes at this capacity. The
+    /// receiver normally reads these out of a frame header; this reproduces them
+    /// for the seam's `collector(stored_len)` shape, which predates the header.
+    pub fn oti_for(&self, stored_len: usize) -> [u8; 12] {
+        raptorq::ObjectTransmissionInformation::new(
+            stored_len as u64,
+            self.symbol_size() as u16,
+            1,
+            1,
+            1,
+        )
+        .serialize()
+    }
+
+    /// Build a collector from the OTI the frame header actually carried — the
+    /// honest receive path, which never assumes it already knows the chunk size.
+    pub fn collector_from_oti(
+        &self,
+        oti: [u8; 12],
+    ) -> Result<RaptorqCollector, FountainSetupError> {
+        crate::fountain::Receiver::from_oti(oti)
+            .map(|rx| RaptorqCollector { rx })
+            .map_err(FountainSetupError)
+    }
+}
+
+/// A fountain that could not be set up for this chunk/capacity pair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FountainSetupError(pub crate::fountain::FountainError);
+
+impl core::fmt::Display for FountainSetupError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for FountainSetupError {}
+
+pub struct RaptorqEmitter {
+    tx: crate::fountain::Transmitter,
+}
+
+impl RaptorqEmitter {
+    /// The 12 bytes the frame header must carry (ADR-0004).
+    pub fn oti(&self) -> [u8; 12] {
+        self.tx.oti()
+    }
+    /// K — the minimum number of frames this chunk can possibly cost.
+    pub fn source_symbols(&self) -> usize {
+        self.tx.source_symbols()
+    }
+    /// Packets emitted so far.
+    pub fn position(&self) -> u64 {
+        self.tx.position()
+    }
+}
+
+impl PacketEmitter for RaptorqEmitter {
+    fn next_packet(&mut self) -> Vec<u8> {
+        self.tx.next_packet()
+    }
+}
+
+pub struct RaptorqCollector {
+    rx: crate::fountain::Receiver,
+}
+
+impl RaptorqCollector {
+    /// Unique, well-formed packets accepted so far.
+    pub fn accepted(&self) -> usize {
+        self.rx.accepted()
+    }
+    /// K for this chunk.
+    pub fn source_symbols(&self) -> usize {
+        self.rx.source_symbols()
+    }
+}
+
+impl PacketCollector for RaptorqCollector {
+    fn absorb(&mut self, packet: &[u8]) -> Option<Vec<u8>> {
+        let was_complete = self.rx.is_complete();
+        self.rx.push(packet);
+        if self.rx.is_complete() && !was_complete {
+            self.rx.finish()
+        } else {
+            None
+        }
+    }
+
+    /// The integer of ADR-0005, straight off the fountain receiver.
+    fn needed(&self) -> u32 {
+        self.rx.needed_more() as u32
+    }
+}
+
+impl ChunkFountain for RaptorqFountain {
+    type Emitter = RaptorqEmitter;
+    type Collector = RaptorqCollector;
+
+    /// Panics only on a mis-sized chunk or capacity, which is a programming
+    /// error at this layer — use [`RaptorqFountain::try_emitter`] to handle it.
+    fn emitter(&self, payload: &[u8]) -> RaptorqEmitter {
+        self.try_emitter(payload)
+            .expect("chunk and frame capacity must fit one RaptorQ source block")
+    }
+
+    fn collector(&self, stored_len: usize) -> RaptorqCollector {
+        self.collector_from_oti(self.oti_for(stored_len))
+            .expect("locally built OTI is always well formed")
+    }
 }
 
 /// In-file stub of the fountain seam: a plain round-robin block repeater. Not a

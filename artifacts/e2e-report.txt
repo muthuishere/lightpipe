@@ -1,0 +1,291 @@
+transfer-qr — END-TO-END INTEGRATION (S0..S5 in one pass)
+=========================================================
+
+Chain: file -> chunk+gzip+manifest -> RaptorQ -> header+CRC -> cells ->
+       fiducials -> [ Channel::*_handheld() ] -> rectify -> CRC -> fountain
+       -> BLAKE3 per chunk -> write at offset -> whole-file BLAKE3.
+Nothing is stubbed: the fountain is raptorq (ADR-0004), not the S5 repeater.
+
+Layers are the clean rungs S4 measured (artifacts/s4-frontier.csv):
+  good_handheld    P8 @  8px   capacity   8748 B/frame   grid 216x111
+  webcam_handheld  P8 @  8px   capacity   8748 B/frame   grid 216x111
+  potato_handheld  P8 @ 20px   capacity   1182 B/frame   grid 83x41
+
+REAL END-TO-END THROUGHPUT
+--------------------------
+KB/s is delivered file bytes / (frames emitted / FPS). FPS is ASSUMED —
+nothing here measures a screen or a camera. `cpu KB/s` is a different number:
+delivered bytes / summed single-thread CPU on each side, all in KB/s.
+
+  cpu dec(refit)  — re-solving the geometry on EVERY frame. This is the
+                    pre-ADR-0015 path and is NOT the decoder's real cost.
+  cpu dec(cached) — ADR-0015: fit once, reuse the pose, re-fit only when a
+                    frame fails. Still warps the whole frame (ADR-0015's
+                    sample-point warp is not implemented here), and the
+                    simulator holds the pose perfectly still, so it is an
+                    upper bound on cache hit rate — a real hand moves.
+
+  camera          payload       frames  drop%  KB/s@15  KB/s@30  wire%   cpu enccpu dec(refit)cpu dec(cached)
+  good_handheld   text-1024KB       44   0.00    357.5    714.9   35.9     16276         345         880
+  webcam_handheld text-1024KB       44   0.00    357.5    714.9   35.9     17280         350         884
+  potato_handheld text-1024KB      320   0.00     49.2     98.3   35.9      2784          80         124
+  webcam+tear/3   text-1024KB       64  31.25    245.8    491.5   35.9     10226         233         373
+  good_handheld   blob-1024KB      120   0.00    131.1    262.1  100.0      6279         118         319
+  webcam_handheld blob-1024KB      122   1.64    128.9    257.8  100.0      6036         117         296
+  potato_handheld blob-1024KB      892   0.00     17.6     35.3  100.0       968          27          42
+  webcam+tear/3   blob-1024KB      180  33.33     87.4    174.8  100.0      3236          74         115
+  good_handheld   text-8192KB      352   0.00    357.5    714.9   35.9     17017         329         872
+  webcam_handheld text-8192KB      352   0.00    357.5    714.9   35.9     16812         332         860
+  potato_handheld text-8192KB     2567   0.00     49.0     98.0   35.9      2603          73         113
+
+EFFICIENCY WATERFALL — of the cell bits the screen emits, what arrives?
+-----------------------------------------------------------------------
+Unit: bytes of delivered file per frame actually displayed.
+
+  good_handheld / text-1024KB  (4 chunks, 44 frames, encoding gzip)
+    stage                                B/frame      step  cumulative
+    raw cell bits on screen              12150.0      0.0%     100.00%
+    - fiducials + margin                  8991.0    -26.0%      74.00%
+    - calibration strip                   8910.0     -0.9%      73.33%
+    - header band                         8748.0     -1.8%      72.00%
+    - bit-packing remainder               8748.0      0.0%      72.00%
+    - frames dropped on CRC               8748.0      0.0%      72.00%
+    - RaptorQ FEC payload id              8744.0     -0.0%      71.97%
+    - fountain surplus packets            8744.0      0.0%      71.97%
+    - symbol padding                      8553.2     -2.2%      70.40%
+    + gzip gain -> file bytes            23831.3    178.6%     196.14%
+
+  webcam_handheld / text-1024KB  (4 chunks, 44 frames, encoding gzip)
+    stage                                B/frame      step  cumulative
+    raw cell bits on screen              12150.0      0.0%     100.00%
+    - fiducials + margin                  8991.0    -26.0%      74.00%
+    - calibration strip                   8910.0     -0.9%      73.33%
+    - header band                         8748.0     -1.8%      72.00%
+    - bit-packing remainder               8748.0      0.0%      72.00%
+    - frames dropped on CRC               8748.0      0.0%      72.00%
+    - RaptorQ FEC payload id              8744.0     -0.0%      71.97%
+    - fountain surplus packets            8744.0      0.0%      71.97%
+    - symbol padding                      8553.2     -2.2%      70.40%
+    + gzip gain -> file bytes            23831.3    178.6%     196.14%
+
+  potato_handheld / text-1024KB  (4 chunks, 320 frames, encoding gzip)
+    stage                                B/frame      step  cumulative
+    raw cell bits on screen               1944.0      0.0%     100.00%
+    - fiducials + margin                  1276.1    -34.4%      65.64%
+    - calibration strip                   1245.0     -2.4%      64.04%
+    - header band                         1182.8     -5.0%      60.84%
+    - bit-packing remainder               1182.0     -0.1%      60.80%
+    - frames dropped on CRC               1182.0      0.0%      60.80%
+    - RaptorQ FEC payload id              1178.0     -0.3%      60.60%
+    - fountain surplus packets            1178.0      0.0%      60.60%
+    - symbol padding                      1176.1     -0.2%      60.50%
+    + gzip gain -> file bytes             3276.8    178.6%     168.56%
+
+  webcam+tear/3 / text-1024KB  (4 chunks, 64 frames, encoding gzip)
+    stage                                B/frame      step  cumulative
+    raw cell bits on screen              12150.0      0.0%     100.00%
+    - fiducials + margin                  8991.0    -26.0%      74.00%
+    - calibration strip                   8910.0     -0.9%      73.33%
+    - header band                         8748.0     -1.8%      72.00%
+    - bit-packing remainder               8748.0      0.0%      72.00%
+    - frames dropped on CRC               6014.2    -31.2%      49.50%
+    - RaptorQ FEC payload id              6011.5     -0.0%      49.48%
+    - fountain surplus packets            6011.5      0.0%      49.48%
+    - symbol padding                      5880.3     -2.2%      48.40%
+    + gzip gain -> file bytes            16384.0    178.6%     134.85%
+
+  good_handheld / blob-1024KB  (4 chunks, 120 frames, encoding gzip)
+    stage                                B/frame      step  cumulative
+    raw cell bits on screen              12150.0      0.0%     100.00%
+    - fiducials + margin                  8991.0    -26.0%      74.00%
+    - calibration strip                   8910.0     -0.9%      73.33%
+    - header band                         8748.0     -1.8%      72.00%
+    - bit-packing remainder               8748.0      0.0%      72.00%
+    - frames dropped on CRC               8748.0      0.0%      72.00%
+    - RaptorQ FEC payload id              8744.0     -0.0%      71.97%
+    - fountain surplus packets            8744.0      0.0%      71.97%
+    - symbol padding                      8740.2     -0.0%      71.94%
+    + gzip gain -> file bytes             8738.1     -0.0%      71.92%
+
+  webcam_handheld / blob-1024KB  (4 chunks, 122 frames, encoding gzip)
+    stage                                B/frame      step  cumulative
+    raw cell bits on screen              12150.0      0.0%     100.00%
+    - fiducials + margin                  8991.0    -26.0%      74.00%
+    - calibration strip                   8910.0     -0.9%      73.33%
+    - header band                         8748.0     -1.8%      72.00%
+    - bit-packing remainder               8748.0      0.0%      72.00%
+    - frames dropped on CRC               8604.6     -1.6%      70.82%
+    - RaptorQ FEC payload id              8600.7     -0.0%      70.79%
+    - fountain surplus packets            8600.7      0.0%      70.79%
+    - symbol padding                      8597.0     -0.0%      70.76%
+    + gzip gain -> file bytes             8594.9     -0.0%      70.74%
+
+  potato_handheld / blob-1024KB  (4 chunks, 892 frames, encoding gzip)
+    stage                                B/frame      step  cumulative
+    raw cell bits on screen               1944.0      0.0%     100.00%
+    - fiducials + margin                  1276.1    -34.4%      65.64%
+    - calibration strip                   1245.0     -2.4%      64.04%
+    - header band                         1182.8     -5.0%      60.84%
+    - bit-packing remainder               1182.0     -0.1%      60.80%
+    - frames dropped on CRC               1182.0      0.0%      60.80%
+    - RaptorQ FEC payload id              1178.0     -0.3%      60.60%
+    - fountain surplus packets            1178.0      0.0%      60.60%
+    - symbol padding                      1175.8     -0.2%      60.48%
+    + gzip gain -> file bytes             1175.5     -0.0%      60.47%
+
+  webcam+tear/3 / blob-1024KB  (4 chunks, 180 frames, encoding gzip)
+    stage                                B/frame      step  cumulative
+    raw cell bits on screen              12150.0      0.0%     100.00%
+    - fiducials + margin                  8991.0    -26.0%      74.00%
+    - calibration strip                   8910.0     -0.9%      73.33%
+    - header band                         8748.0     -1.8%      72.00%
+    - bit-packing remainder               8748.0      0.0%      72.00%
+    - frames dropped on CRC               5832.0    -33.3%      48.00%
+    - RaptorQ FEC payload id              5829.3     -0.0%      47.98%
+    - fountain surplus packets            5829.3      0.0%      47.98%
+    - symbol padding                      5826.8     -0.0%      47.96%
+    + gzip gain -> file bytes             5825.4     -0.0%      47.95%
+
+  good_handheld / text-8192KB  (32 chunks, 352 frames, encoding gzip)
+    stage                                B/frame      step  cumulative
+    raw cell bits on screen              12150.0      0.0%     100.00%
+    - fiducials + margin                  8991.0    -26.0%      74.00%
+    - calibration strip                   8910.0     -0.9%      73.33%
+    - header band                         8748.0     -1.8%      72.00%
+    - bit-packing remainder               8748.0      0.0%      72.00%
+    - frames dropped on CRC               8748.0      0.0%      72.00%
+    - RaptorQ FEC payload id              8744.0     -0.0%      71.97%
+    - fountain surplus packets            8744.0      0.0%      71.97%
+    - symbol padding                      8549.9     -2.2%      70.37%
+    + gzip gain -> file bytes            23831.3    178.7%     196.14%
+
+  webcam_handheld / text-8192KB  (32 chunks, 352 frames, encoding gzip)
+    stage                                B/frame      step  cumulative
+    raw cell bits on screen              12150.0      0.0%     100.00%
+    - fiducials + margin                  8991.0    -26.0%      74.00%
+    - calibration strip                   8910.0     -0.9%      73.33%
+    - header band                         8748.0     -1.8%      72.00%
+    - bit-packing remainder               8748.0      0.0%      72.00%
+    - frames dropped on CRC               8748.0      0.0%      72.00%
+    - RaptorQ FEC payload id              8744.0     -0.0%      71.97%
+    - fountain surplus packets            8744.0      0.0%      71.97%
+    - symbol padding                      8549.9     -2.2%      70.37%
+    + gzip gain -> file bytes            23831.3    178.7%     196.14%
+
+  potato_handheld / text-8192KB  (32 chunks, 2567 frames, encoding gzip)
+    stage                                B/frame      step  cumulative
+    raw cell bits on screen               1944.0      0.0%     100.00%
+    - fiducials + margin                  1276.1    -34.4%      65.64%
+    - calibration strip                   1245.0     -2.4%      64.04%
+    - header band                         1182.8     -5.0%      60.84%
+    - bit-packing remainder               1182.0     -0.1%      60.80%
+    - frames dropped on CRC               1182.0      0.0%      60.80%
+    - RaptorQ FEC payload id              1178.0     -0.3%      60.60%
+    - fountain surplus packets            1178.0      0.0%      60.60%
+    - symbol padding                      1172.4     -0.5%      60.31%
+    + gzip gain -> file bytes             3267.9    178.7%     168.10%
+
+  Read the waterfall as: 100% of the light the screen spends, minus each layer's
+  cut, is what lands in the file. The last row is a *gain*: gzip delivers more
+  file bytes than the wire carried, so file efficiency can exceed 100%.
+
+  camera          payload       raw B/frame    wire B/fr    file B/fr    wire eff    file eff
+  good_handheld   text-1024KB         12150       8553.2      23831.3      70.40%     196.14%
+  webcam_handheld text-1024KB         12150       8553.2      23831.3      70.40%     196.14%
+  potato_handheld text-1024KB          1944       1176.1       3276.8      60.50%     168.56%
+  webcam+tear/3   text-1024KB         12150       5880.3      16384.0      48.40%     134.85%
+  good_handheld   blob-1024KB         12150       8740.2       8738.1      71.94%      71.92%
+  webcam_handheld blob-1024KB         12150       8597.0       8594.9      70.76%      70.74%
+  potato_handheld blob-1024KB          1944       1175.8       1175.5      60.48%      60.47%
+  webcam+tear/3   blob-1024KB         12150       5826.8       5825.4      47.96%      47.95%
+  good_handheld   text-8192KB         12150       8549.9      23831.3      70.37%     196.14%
+  webcam_handheld text-8192KB         12150       8549.9      23831.3      70.37%     196.14%
+  potato_handheld text-8192KB          1944       1172.4       3267.9      60.31%     168.10%
+
+CPU TIME — where it goes (summed single-thread, release build)
+--------------------------------------------------------------
+  camera          payload      encode ms channel ms    fit ms  fit chg ms   warp msdecode msfountain msverify ms
+  good_handheld   text-1024KB         64       7208      1886          35      1126     27.5       0.1      3.0
+  webcam_handheld text-1024KB         61       7786      1842          33      1121     27.8       0.1      3.0
+  potato_handheld text-1024KB        377      62822      4670          11      8356    107.0       0.1      3.0
+  webcam+tear/3   text-1024KB        103      11853      2422         729      2027     49.6       0.6      3.0
+  good_handheld   blob-1024KB        167      20493      5657          33      3171     82.8       0.2      0.7
+  webcam_handheld blob-1024KB        174      22712      5531         126      3326     86.0       0.6      0.7
+  potato_handheld blob-1024KB       1084     188588     13798          12     24870    317.7       0.2      0.7
+  webcam+tear/3   blob-1024KB        324      37067      7717        2554      6382    164.4       1.2      0.7
+  good_handheld   text-8192KB        493      60116     15892          33      9325    230.4       0.5     26.1
+  webcam_handheld text-8192KB        499      65479     15574          33      9459    232.4       0.5     26.2
+  potato_handheld text-8192KB       3223     552824     41424          12     73164    943.3       0.9     29.4
+
+  `channel ms` is the simulator standing in for air+sensor. It is NOT a cost
+  either device pays in production; it is excluded from cpu KB/s above.
+  `encode ms` is the per-frame sender cost (render + fiducials) only. Chunking,
+  gzip and the manifest hashes happen once, outside the frame loop — S5 measured
+  the compressor at 81.2 MB/s, ~600x the fastest channel here (ADR-0014).
+  `fit ms` is every-frame geometry; `fit chg ms` is what ADR-0015 actually pays
+  (acquisition + re-fits). `decode ms` is `header::decode_frame` — CRC, symbol
+  sampling, bit unpacking — the only part that is really "decoding".
+
+GEOMETRY CACHE (ADR-0015) — how often the pose had to be re-solved
+------------------------------------------------------------------
+  camera          payload        frames  acquisitions   refits    fit/frame ms   warp/frame ms
+  good_handheld   text-1024KB        44             1        0            42.9            25.6
+  webcam_handheld text-1024KB        44             1        0            41.9            25.5
+  potato_handheld text-1024KB       320             1        0            14.6            26.1
+  webcam+tear/3   text-1024KB        64             1       20            37.8            31.7
+  good_handheld   blob-1024KB       120             1        0            47.1            26.4
+  webcam_handheld blob-1024KB       122             1        2            45.3            27.3
+  potato_handheld blob-1024KB       892             1        0            15.5            27.9
+  webcam+tear/3   blob-1024KB       180             1       61            42.9            35.5
+  good_handheld   text-8192KB       352             1        0            45.1            26.5
+  webcam_handheld text-8192KB       352             1        0            44.2            26.9
+  potato_handheld text-8192KB      2567             1        0            16.1            28.5
+
+  A re-fit happens only where a frame failed to decode off the cached pose —
+  which in this simulator is exactly the frames the tear destroyed. The pose is
+  static here; a moving hand would re-fit more often.
+
+FOUNTAIN + FRAME BUDGET
+-----------------------
+  camera          payload            K  packets  overhead   frames  B/frame net
+  good_handheld   text-1024KB       44       44    0.000%       44      23831.3
+  webcam_handheld text-1024KB       44       44    0.000%       44      23831.3
+  potato_handheld text-1024KB      320      320    0.000%      320       3276.8
+  webcam+tear/3   text-1024KB       44       44    0.000%       64      16384.0
+  good_handheld   blob-1024KB      120      120    0.000%      120       8738.1
+  webcam_handheld blob-1024KB      120      120    0.000%      122       8594.9
+  potato_handheld blob-1024KB      892      892    0.000%      892       1175.5
+  webcam+tear/3   blob-1024KB      120      120    0.000%      180       5825.4
+  good_handheld   text-8192KB      352      352    0.000%      352      23831.3
+  webcam_handheld text-8192KB      352      352    0.000%      352      23831.3
+  potato_handheld text-8192KB     2567     2567    0.000%     2567       3267.9
+
+LAYERED BROADCAST — ONE STREAM, BOTH CAMERAS (ADR-0011, ADR-0012)
+-----------------------------------------------------------------
+  chunk 65536 B, symbol 1178 B (the coarse rung), K = 56 packets.
+  coarse frame (P8@20px) carries 1 packet = 1182 B; dense frame (P8@8px) carries
+  7 packets = 8274 of 8748 B (94.6% — the granularity cost of a shared symbol size).
+
+  camera               frames    coarse  dense used     packets   B/frame
+  good_handheld            11         3           8          59      5958
+  potato_handheld         221        56           0          56       297
+
+  Both cameras finish off ONE broadcast, and the good camera's coarse frames are
+  not wasted airtime — they carry packets of the same source block. With a
+  per-layer symbol size (what ADR-0011 implies) they would have been unusable.
+
+HUMAN-FACING GUARANTEES (ADR-0005 / ADR-0011)
+---------------------------------------------
+  1. display code   sender C4B9TF == receiver C4B9TF   -> MATCH
+  2. needed_more()  starts at 217, ends at 0, 218 readings, monotone=true
+     first ten: [217, 216, 215, 214, 213, 212, 211, 210, 209, 208]   last ten: [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+     a human reads a 1-3 digit integer; the largest seen anywhere here is 217.
+
+  3. killed at 23/32 chunks (71.9% = 6029312 of 8388608 B on disk). Receiver screen: "Q-7C"
+     typed back as "q-7c" -> chunk 23 need 7; 23 retained chunks re-read off the sink and re-verified
+     re-sent 9 chunks in 99 frames (28.1% of a fresh transfer); byte-identical: true; whole-file BLAKE3: true
+
+  4. hopeless camera: 15 frames tried, any decode = false, gave up after 1.00s of
+     simulated capture (4621 ms of real CPU). rectify() returns None (no fiducials),
+     so the UI can say "cannot see the code — move closer / clean the lens" at frame 15,
+     never hang at 0%.

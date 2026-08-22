@@ -129,15 +129,17 @@ fn writes_land_at_their_own_offset_not_appended() {
 }
 
 #[test]
-fn raw_mode_roundtrips_incompressible_input() {
+fn incompressible_input_still_gzips_and_costs_almost_nothing() {
+    // ADR-0014: always chunk, always gzip — there is no raw mode to select.
     let data = prng_bytes(400_000, 11);
     let mut enc = Encoder::build(&data[..], cfg(32 * 1024));
     let m = enc.manifest().clone();
-    assert_eq!(m.encoding, Encoding::Raw);
-    assert_eq!(
-        m.stored_total(),
-        data.len() as u64,
-        "raw must not grow the payload"
+    assert_eq!(m.encoding, Encoding::Gzip);
+    let growth = m.stored_total() as f64 / data.len() as f64 - 1.0;
+    assert!(
+        growth > 0.0 && growth < 0.001,
+        "gzip framing on incompressible input must cost <0.1%, measured {:.4}%",
+        100.0 * growth
     );
 
     let mut rx = Receiver::new(m.clone(), SparseSink::new());
