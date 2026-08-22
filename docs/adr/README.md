@@ -22,3 +22,4 @@ meaning — supersede it with a new one and mark the old `Superseded by ADR-NNNN
 | [0014](0014-always-compress.md) | Always chunk and gzip; no raw mode, no probe (supersedes ADR-0006's probe) | Accepted |
 | [0015](0015-cache-the-homography.md) | Decoder is stateful; cache the homography, warp only sample points | Accepted |
 | [0016](0016-validation-handshake.md) | A validation handshake before the blind transfer (refines ADR-0005) | Accepted |
+| [0017](0017-preflight-doctor-and-start-order.md) | Receiver starts first; a preflight doctor before any transfer | Accepted |
