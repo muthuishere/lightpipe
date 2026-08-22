@@ -1,6 +1,7 @@
 //! Channel simulator: stands in for "screen -> air -> webcam" (ADR-0009).
 //! Deterministic — the PRNG is seeded — so every result is reproducible.
 
+use crate::geometry::{mat3_mul, Homography, Mat3, Radial};
 use crate::image::RgbImage;
 
 #[derive(Clone, Copy, Debug)]
@@ -23,6 +24,27 @@ pub struct Channel {
     pub noise: f32,
     /// Corner falloff. 0.0 = none, 0.4 = heavy vignette.
     pub vignette: f32,
+
+    // ---- geometry (S4). All zero/identity by default, so a Channel built
+    // before S4 behaves exactly as it did. ----
+    /// Off-axis viewing, rotation about the screen's vertical axis, degrees.
+    pub yaw_deg: f32,
+    /// Off-axis viewing, rotation about the screen's horizontal axis, degrees.
+    pub pitch_deg: f32,
+    /// In-plane rotation (camera not held level), degrees.
+    pub roll_deg: f32,
+    /// Screen size in the frame. 1.0 = fills it; 0.8 = 20% smaller.
+    pub scale: f32,
+    /// Camera not centred, as a fraction of frame width / height.
+    pub tx: f32,
+    pub ty: f32,
+    /// Radial lens term. Negative is barrel (the usual webcam sign).
+    pub barrel: f32,
+    /// Rolling-shutter tear: fraction of image height above which the rows come
+    /// from the *previous* frame. 0.0 = no tear. Only visible through
+    /// [`Channel::apply_pair`]; [`Channel::apply`] passes one frame as both.
+    pub tear_at: f32,
+
     pub seed: u32,
 }
 
@@ -37,6 +59,14 @@ impl Default for Channel {
             jpeg: 0.0,
             noise: 0.0,
             vignette: 0.0,
+            yaw_deg: 0.0,
+            pitch_deg: 0.0,
+            roll_deg: 0.0,
+            scale: 1.0,
+            tx: 0.0,
+            ty: 0.0,
+            barrel: 0.0,
+            tear_at: 0.0,
             seed: 0x5EED_1234,
         }
     }
@@ -94,6 +124,133 @@ impl Channel {
         }
     }
 
+    /// Hand-held / propped-up geometry on top of an existing optical profile.
+    ///
+    /// NOTE: the base `good()` / `webcam()` / `potato()` presets deliberately
+    /// stay geometry-free. `crates/core/tests/roundtrip.rs` asserts SER = 0 for
+    /// `good()` sampled *without* rectification, and any warp there would make
+    /// that assertion false — the S1 numbers are defined on an aligned grid.
+    /// The warped world lives in these `*_handheld` variants instead, so both
+    /// the S1 ladder and the S4 geometry results stay measurable side by side.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_geometry(
+        self,
+        yaw_deg: f32,
+        pitch_deg: f32,
+        roll_deg: f32,
+        scale: f32,
+        tx: f32,
+        ty: f32,
+        barrel: f32,
+    ) -> Self {
+        Self {
+            yaw_deg,
+            pitch_deg,
+            roll_deg,
+            scale,
+            tx,
+            ty,
+            barrel,
+            ..self
+        }
+    }
+
+    pub fn with_tear(self, tear_at: f32) -> Self {
+        Self { tear_at, ..self }
+    }
+
+    /// Phone held in one hand: the most off-axis of the three, least barrel.
+    pub fn good_handheld() -> Self {
+        Self::good().with_geometry(12.0, 8.0, 6.0, 0.82, 0.020, -0.015, -0.04)
+    }
+
+    /// Laptop webcam looking up at a screen a little to one side.
+    pub fn webcam_handheld() -> Self {
+        Self::webcam().with_geometry(8.0, 6.0, 4.0, 0.85, 0.040, 0.030, -0.06)
+    }
+
+    /// Cheap fixed-focus webcam propped on a stack of books. Wide, cheap
+    /// plastic optics, so the most barrel and the smallest screen in frame.
+    pub fn potato_handheld() -> Self {
+        Self::potato().with_geometry(6.0, 5.0, 3.0, 0.80, -0.040, 0.030, -0.09)
+    }
+
+    pub fn has_geometry(&self) -> bool {
+        self.yaw_deg != 0.0
+            || self.pitch_deg != 0.0
+            || self.roll_deg != 0.0
+            || (self.scale - 1.0).abs() > 1e-6
+            || self.tx != 0.0
+            || self.ty != 0.0
+            || self.barrel != 0.0
+    }
+
+    /// Canonical-frame pixels -> ideal (undistorted) image pixels.
+    ///
+    /// The screen is a plane at z = 0, rotated by Rz(roll) Ry(yaw) Rx(pitch),
+    /// pushed to distance `d`, and projected through a pinhole of focal length
+    /// `d` so that the zero-rotation case is exactly the identity.
+    pub fn forward_homography(&self, w: usize, h: usize) -> Homography {
+        let s0 = 0.5 * w.max(h) as f64;
+        let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
+        let to_plane: Mat3 = [
+            [1.0 / s0, 0.0, -cx / s0],
+            [0.0, 1.0 / s0, -cy / s0],
+            [0.0, 0.0, 1.0],
+        ];
+        let r = rotation(
+            self.pitch_deg as f64,
+            self.yaw_deg as f64,
+            self.roll_deg as f64,
+        );
+        let d = 2.5f64;
+        let project: Mat3 = [
+            [d * r[0][0], d * r[0][1], 0.0],
+            [d * r[1][0], d * r[1][1], 0.0],
+            [r[2][0], r[2][1], d],
+        ];
+        let s = self.scale as f64 * s0;
+        let to_px: Mat3 = [
+            [s, 0.0, cx + self.tx as f64 * w as f64],
+            [0.0, s, cy + self.ty as f64 * h as f64],
+            [0.0, 0.0, 1.0],
+        ];
+        Homography::from_mat(mat3_mul(&to_px, &mat3_mul(&project, &to_plane)))
+    }
+
+    pub fn radial(&self, w: usize, h: usize) -> Radial {
+        Radial::new(w, h, self.barrel as f64)
+    }
+
+    /// Where a canonical-frame point lands in the captured image. Ground truth
+    /// for measuring fiducial-detection accuracy.
+    pub fn project_point(&self, w: usize, h: usize, p: [f64; 2]) -> [f64; 2] {
+        self.radial(w, h)
+            .distort(self.forward_homography(w, h).apply(p))
+    }
+
+    /// Backward-map the frame through the geometry. Anything that maps outside
+    /// the screen is black — that is what "the screen does not fill the frame"
+    /// actually looks like.
+    fn warp(&self, src: &RgbImage) -> RgbImage {
+        let h = match self.forward_homography(src.w, src.h).inverse() {
+            Some(h) => h,
+            None => return src.clone(),
+        };
+        let radial = self.radial(src.w, src.h);
+        let mut out = RgbImage::new(src.w, src.h);
+        for y in 0..src.h {
+            for x in 0..src.w {
+                let p = h.apply(radial.undistort([x as f64 + 0.5, y as f64 + 0.5]));
+                if p[0] < 0.0 || p[1] < 0.0 || p[0] >= src.w as f64 || p[1] >= src.h as f64 {
+                    continue;
+                }
+                out.set(x, y, crate::geometry::bilinear(src, p[0], p[1]));
+            }
+        }
+        out
+    }
+
     pub fn named() -> Vec<(&'static str, Channel)> {
         vec![
             ("ideal", Self::ideal()),
@@ -103,8 +260,38 @@ impl Channel {
         ]
     }
 
+    /// The same three cameras, now hand-held (S4).
+    pub fn named_handheld() -> Vec<(&'static str, Channel)> {
+        vec![
+            ("good+warp", Self::good_handheld()),
+            ("webcam+warp", Self::webcam_handheld()),
+            ("potato+warp", Self::potato_handheld()),
+        ]
+    }
+
     pub fn apply(&self, src: &RgbImage) -> RgbImage {
-        let mut img = src.clone();
+        self.apply_pair(src, src)
+    }
+
+    /// Capture `cur`, with the rows above the rolling-shutter seam read out of
+    /// `prev`. Geometry is applied to both frames first, because the tear is a
+    /// sensor read-out artifact and therefore lives in *image* space.
+    pub fn apply_pair(&self, cur: &RgbImage, prev: &RgbImage) -> RgbImage {
+        let mut img = if self.has_geometry() {
+            self.warp(cur)
+        } else {
+            cur.clone()
+        };
+        if self.tear_at > 0.0 && self.tear_at < 1.0 {
+            let old = if self.has_geometry() {
+                self.warp(prev)
+            } else {
+                prev.clone()
+            };
+            let seam = ((self.tear_at as f64 * img.h as f64) as usize).min(img.h);
+            let n = seam * img.w * 3;
+            img.data[..n].copy_from_slice(&old.data[..n.min(old.data.len())]);
+        }
         apply_response(&mut img, self.gain, self.gamma);
         if self.vignette > 0.0 {
             apply_vignette(&mut img, self.vignette);
@@ -126,6 +313,17 @@ impl Channel {
         }
         img
     }
+}
+
+/// Rz(roll) * Ry(yaw) * Rx(pitch), angles in degrees.
+fn rotation(pitch_deg: f64, yaw_deg: f64, roll_deg: f64) -> Mat3 {
+    let (sp, cp) = pitch_deg.to_radians().sin_cos();
+    let (sy, cy) = yaw_deg.to_radians().sin_cos();
+    let (sr, cr) = roll_deg.to_radians().sin_cos();
+    let rx: Mat3 = [[1.0, 0.0, 0.0], [0.0, cp, -sp], [0.0, sp, cp]];
+    let ry: Mat3 = [[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]];
+    let rz: Mat3 = [[cr, -sr, 0.0], [sr, cr, 0.0], [0.0, 0.0, 1.0]];
+    mat3_mul(&rz, &mat3_mul(&ry, &rx))
 }
 
 struct Rng(u32);

@@ -17,5 +17,5 @@ pub mod sim;
 
 pub use frame::FrameSpec;
 pub use image::RgbImage;
-pub use palette::{Palette, P4, P8};
+pub use palette::{Palette, P2, P4, P8};
 pub use sim::Channel;

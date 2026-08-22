@@ -1,0 +1,51 @@
+S2 — frame integrity: header band + CRC32
+
+header record: 25 B  (magic u16 · version u8 · seq u32 · payload_len u16 · oti[12] · crc32)
+band: 2 grid rows between the calibration strip and the payload; the record is
+repeated across it and the first copy whose CRC validates wins.
+
+1. capacity and header overhead (1920x1080)
+   pal   cell    cols   rows  payload B    band B  copies  overhead
+   P4       8     238    133       7735       119       4    1.52%
+   P4      10     190    106       4892        95       3    1.90%
+   P4      14     135     75       2430        67       2    2.68%
+   P8       8     238    133      11602       178       7    1.51%
+   P8      10     190    106       7338       142       5    1.90%
+   P8      14     135     75       3645       101       4    2.70%
+
+2. clean frames round-trip exactly (ideal channel)
+   P4   cell= 8px    7735 B  OK
+   P4   cell=10px    4892 B  OK
+   P4   cell=14px    2430 B  OK
+   P8   cell= 8px   11602 B  OK
+   P8   cell=10px    7338 B  OK
+   P8   cell=14px    3645 B  OK
+
+3. false-accept rate over corrupted frames
+   P4 960x540 c8      copies=2 payload<= 1829B  trials= 25000  accepted(correct)=   41  FALSE ACCEPTS=0
+   P8 960x540 c8      copies=3 payload<= 2743B  trials= 25000  accepted(correct)=   59  FALSE ACCEPTS=0
+   P4 1280x720 c10    copies=2 payload<= 2110B  trials= 25000  accepted(correct)=   34  FALSE ACCEPTS=0
+   P8 640x360 c14     copies=1 payload<=  322B  trials= 25000  accepted(correct)=  175  FALSE ACCEPTS=0
+   ---- 100000 corrupted frames: 99691 rejected, 309 accepted with byte-identical data,
+        FALSE-ACCEPT RATE = 0 / 100000 = 0.000e0   OK
+   (an accepted corrupt frame is only possible when the corruption fell
+    entirely outside the CRC-covered bytes, i.e. in the padding tail.)
+
+3b. pixel-level corruption (cells repainted in the rendered image)
+   1000 corrupted rendered frames: 2 accepted (all byte-identical), FALSE ACCEPTS=0  OK
+
+4. header decodes under the simulated cameras, at the S1-clean layers
+   webcam  P4   cell= 8px    7735 B/frame  copies=4  OK
+   webcam  P4   cell=10px    4892 B/frame  copies=3  OK
+   webcam  P4   cell=14px    2430 B/frame  copies=2  OK
+   webcam  P8   cell= 8px   11602 B/frame  copies=7  OK
+   webcam  P8   cell=10px    7338 B/frame  copies=5  OK
+   webcam  P8   cell=14px    3645 B/frame  copies=4  OK
+   potato  P4   cell=14px    2430 B/frame  copies=2  OK
+   potato  P4   cell=20px    1151 B/frame  copies=1  OK
+   potato  P8   cell=14px    3645 B/frame  copies=4  OK
+   potato  P8   cell=20px    1727 B/frame  copies=2  OK
+
+symbols per header copy: P4=100 P8=67
+
+S2 PASS

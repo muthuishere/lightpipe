@@ -18,6 +18,14 @@ pub struct Palette {
     pub bits: u32,
 }
 
+/// The ladder floor of ADR-0011: luma only, no chroma at all. Nothing about a
+/// camera can take this away short of failing to focus.
+pub const P2: Palette = Palette {
+    name: "P2",
+    colors: &[BLACK, WHITE],
+    bits: 1,
+};
+
 /// v1 default. Luma 0.00 / 0.30 / 0.70 / 1.00 -- evenly spread, and red<->cyan are
 /// chroma opposites. Maximum separation in both the luma and chroma planes.
 pub const P4: Palette = Palette {
@@ -34,7 +42,7 @@ pub const P8: Palette = Palette {
     bits: 3,
 };
 
-pub const ALL: &[&Palette] = &[&P4, &P8];
+pub const ALL: &[&Palette] = &[&P2, &P4, &P8];
 
 #[inline]
 pub fn luma(c: [f32; 3]) -> f32 {

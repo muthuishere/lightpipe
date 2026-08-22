@@ -64,6 +64,36 @@ simulated potato camera decoding **P8 @ 14px** with SER 0, and **P2 @ 8px** carr
 - Rungs must be read off the sweep CSV, not interpolated: SER is **non-monotonic**
   in cell size because cell pitch aliases against the sensor's resample grid.
 
+## Revised after S4 (2026-08-22) — geometry enabled
+The S1 amendment above ("raise the L0 floor well above 20px/1-bit") was measured
+**without perspective warp** and is withdrawn. With realistic hand-held geometry:
+
+| camera | S1 (no warp) | S4 (warp) | drop |
+|---|---|---|---|
+| good    | P8 @ 6px = 21,405 B | P8 @ 8px = 8,748 B | −59.1% |
+| webcam  | P8 @ 8px = 11,781 B | P8 @ 8px = 8,748 B | −25.7% |
+| potato  | P2 @ 8px = 3,927 B  | P8 @ 20px = 1,182 B | −69.9% |
+
+**The L0 rung moves to 20px.** The hand-held potato still decodes P8 @ 20px cleanly —
+1,182 B/frame, 17.7 KB/s at 15 FPS. It completes, just slowly, which is exactly the
+guarantee this ADR exists to make.
+
+Note P8 (3 bits, full colour) wins at every rung, including the potato's. The drafted
+assumption that a bad camera needs a 1-bit black-and-white layer is **not supported by
+any measurement**; colour survives, resolution does not. A P2 rung may still be worth
+keeping as a floor below L0, but it is no longer the potato's operating point.
+
+Rungs must be read from `artifacts/s4-frontier.csv`, never interpolated (see
+ADR-0002's measured fiducial cost and the aliasing finding in S1/S2).
+
+## Simulator contract: sensor vs pose
+S4 kept `good()`/`webcam()`/`potato()` free of geometry and added
+`good_handheld()`/`webcam_handheld()`/`potato_handheld()`. This split is deliberate and
+is now the contract, guarded by a test: **base presets model the sensor** (blur, noise,
+resolution, chroma, gain); **`_handheld` variants add pose** (yaw, pitch, roll, scale,
+translation, barrel, tear). Keeping them separable is what lets a spike attribute a
+regression to optics or to framing rather than guessing.
+
 ## Alternatives rejected
 - **Single fixed profile** — either too slow for good cameras or broken on bad ones.
 - **Sender-side ladder sweep** (send a burst at each profile in turn) — works, but

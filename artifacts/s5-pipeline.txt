@@ -1,0 +1,66 @@
+S5 — chunked gzip pipeline (ADR-0006), integrity + resume (ADR-0005),
+     out-of-order random-access write (ADR-0008).
+     chunk size 256 KB · deflate level 6 · one RFC 1952 gzip member per chunk
+     browser interop (checked out of band, Node v24.18 / WHATWG streams):
+       flate2 member -> DecompressionStream('gzip')  = 300,000 B byte-identical
+       CompressionStream('gzip') -> flate2 gunzip     = 300,000 B byte-identical
+     so the ADR-0007 browser build can read and write this wire format unchanged.
+
+1. compressibility probe (ADR-0006: ratio worse than 0.95 => whole transfer raw)
+--------------------------------------------------------------------------------
+   text                 first-chunk ratio 0.359  ->  gzip
+   source               first-chunk ratio 0.281  ->  gzip
+   blob (mp4/jpg/zip)   first-chunk ratio 1.000  ->  raw
+
+   64 MB incompressible: gzip-everything 0.80 s (79.7 MB/s, +0.02% size) vs probe-only 3.1 ms
+   CPU saved by the probe: 257.8x (0.80 s per 64 MB, ~12.8 s per GB) and gzip on an
+   already-compressed file only made it +0.02% bigger anyway.
+
+2. compression cost of chunking vs whole-file gzip (ADR-0006 estimates 1-3%)
+----------------------------------------------------------------------------
+   corpus                 size    whole-file    chunked      penalty   (chunk KB)  ratio
+   text (prose)             8.0 MB    2968865      3295931     11.02%      64  0.354
+                            8.0 MB                 3055720      2.93%     256  
+                            8.0 MB                 2988439      0.66%    1024  
+   source (rust-like)       8.0 MB    2281084      2514798     10.25%      64  0.272
+                            8.0 MB                 2340955      2.62%     256  
+                            8.0 MB                 2294545      0.59%    1024  
+   repo (real .rs/.md)      0.2 MB      74266        76932      3.59%      64  0.301
+                            0.2 MB                   74266      0.00%     256  
+                            0.2 MB                   74266      0.00%    1024  
+   blob (incompressible)    8.0 MB    8389951      8388608     -0.02%      64  1.000  (raw: probe said don't bother)
+                            8.0 MB                 8388608     -0.02%     256  
+                            8.0 MB                 8388608     -0.02%    1024  
+
+   worst compressible-corpus penalty at the 256 KB default: 2.93%
+   verdict: ADR-0006's 1-3% estimate is CONFIRMED.
+
+3. out-of-order arrival through the fountain seam (ADR-0004 stub) -> byte-exact
+-------------------------------------------------------------------------------
+   16 chunks delivered in shuffled order, 29% packet loss (1972 of 6599 packets dropped)
+   reconstruction: byte-exact (4194304 bytes), whole-file BLAKE3 verified
+   display code both screens show (ADR-0005, 6 chars): 113NJ7
+
+4. kill at 70%, resume from the typed code (ADR-0005/0006) — on a real file
+-----------------------------------------------------------------------------
+   killed after 22/32 chunks: 5.50 MB of 8.00 MB retained (68.8%), file on disk 8.00 MB
+   typed resume code: "P-AM2"  (5 characters)
+   format: <chunk>-<need><check>, Crockford base32, 4-9 chars (<=8 for a 1 GB transfer)
+   resumed at chunk 22 (need 340 more packets); 22 of 22 retained chunks re-verified against
+   their manifest BLAKE3 — the remaining 10 chunks are all that is re-sent
+   completed: whole-file BLAKE3 matches, output byte-identical. code MTJSYH
+
+5. 1024 MB synthetic file — memory must stay bounded (ADR-0006/0008)
+----------------------------------------------------------------------
+   manifest: 4096 chunks of 256 KB, encoding gzip, built in 38.5 s (27 MB/s)
+   manifest cost: 180224 bytes (0.17 MB) — 0.01678% of the payload
+   transferred out-of-order (odds then evens) in 40.0 s; verified whole-file BLAKE3 in 0.5 s
+   compressed size on the wire: 289.4 MB of 1024.0 MB (28.3% ratio)
+
+   peak RSS before the run      :      1.7 MB
+   peak RSS after manifest pass :      3.5 MB
+   peak RSS after transfer      :      4.6 MB
+   peak RSS after whole verify  :      4.6 MB
+   => 4.6 MB peak for a 1024 MB file = 0.0045x. Bounded: memory tracks chunk size,
+      not file size. ADR-0006's bounded-memory claim holds.
+   display code: QSPFZ9

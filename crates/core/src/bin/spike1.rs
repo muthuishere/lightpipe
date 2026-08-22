@@ -5,7 +5,7 @@
 use optical_core::codec;
 use optical_core::modem;
 use optical_core::sim::Channel;
-use optical_core::{FrameSpec, Palette, P4, P8};
+use optical_core::{FrameSpec, Palette, P2, P4, P8};
 
 fn prng_bytes(n: usize, seed: u32) -> Vec<u8> {
     let mut x = seed | 1;
@@ -18,13 +18,6 @@ fn prng_bytes(n: usize, seed: u32) -> Vec<u8> {
         })
         .collect()
 }
-
-/// Black/white only — the bulletproof L0 layer of ADR-0011.
-const P2: Palette = Palette {
-    name: "P2",
-    colors: &[optical_core::palette::BLACK, optical_core::palette::WHITE],
-    bits: 1,
-};
 
 fn trial(pal: &Palette, cell: usize, ch: &Channel) -> (f64, usize) {
     let spec = FrameSpec::new(1920, 1080, cell);
