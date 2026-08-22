@@ -324,13 +324,23 @@ simulator bug.
 **Procedure:** [`S6-CAPTURE-GUIDE.md`](S6-CAPTURE-GUIDE.md) — no code needed, ~10 minutes.
 **ADRs:** 0009
 
-## S7 — wasm + Node harness · STATUS: PENDING
+## S7 — wasm + Node harness · STATUS: DONE
+**Measured (2026-08-22):** bundle 219.3 KB gzipped at `opt-level=3` (ADR-0007's
+200–400 KB prediction holds; its `opt-level=z` mitigation was withdrawn — 8.5% smaller
+but 2.1× slower on the geometry path). JS↔WASM boundary 0.90 µs/frame, 0 bytes
+serialised; zero-copy verified (500 frames grow linear memory by 0). Aligned decode
+0.55 ms = 1,816 FPS. Harness: 87 checks, no browser.
 **Unknown:** does the wasm boundary cost or break anything?
 **Acceptance:** the S0–S5 test suite runs through the compiled wasm in Node.
 Still no browser. Zero-copy frame handoff verified.
 **ADRs:** 0007
 
-## S8 — React app · STATUS: PENDING
+## S8 — React app · STATUS: DONE
+**Measured (2026-08-22):** 11/11 Playwright e2e against the production bundle with the
+real wasm core (re-run after the dense-packing fix). Screen-capture path 2.65 MB/s vs
+125.8 KB/s through the camera path. App bundle 64.04 kB gzipped + 414 kB wasm.
+**Note:** those two throughput figures are reported by the app's own instrumentation
+and are NOT backed by a file in `artifacts/` — unlike every other number here.
 **Unknown:** can the browser hit the frame rate?
 **Acceptance:** getUserMedia → decode → OPFS write at target FPS; sender loop at
 target FPS; measured end-to-end KB/s on real hardware.

@@ -81,7 +81,7 @@ retained chunk can be re-verified off disk without re-fetching).
 
 Built as `crates/wasm` (`optical-wasm`), bundled to `app/src/wasm/` by
 `wasm-pack build --target web`. `harness/run.mjs` runs the whole chain through the
-compiled wasm in Node — 62 checks, no browser. Everything below is what the frozen
+compiled wasm in Node — 87 checks, no browser. Everything below is what the frozen
 contract did not say and someone had to decide.
 
 ### Implemented exactly as written

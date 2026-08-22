@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>lightpipe — the measured numbers</title>
+<meta name="description" content="Every published lightpipe figure, with where it was measured and what it does not cover.">
+<link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<div class="wrap">
+
+<header class="masthead">
+  <a class="name" href="index.html">lightpipe</a>
+  <span class="tag">documentation</span>
+  <nav>
+    <a href="index.html">Guide</a>
+    <a href="numbers.html" aria-current="page">Numbers</a>
+    <a href="status.html">Status &amp; limits</a>
+    <a href="../">Open the app</a>
+  </nav>
+</header>
+
+<h1>The measured numbers</h1>
+
+<p class="lede">Everything here comes from a spike that anyone can re-run, and
+leaves an artifact anyone can look at. Where a figure is an assumption rather
+than a measurement, it says so.</p>
+
+<div class="note warn">
+  <strong>One caveat covers this entire page.</strong>
+  <p>All optical figures were produced against a channel <em>simulator</em>, not
+  hardware. No real camera has yet decoded a real screen in this project. See
+  <a href="status.html">Status &amp; limits</a>.</p>
+</div>
+
+<h2 id="throughput">Throughput</h2>
+
+<p>Per-frame capacity at the clean-decode frontier, hand-held, with perspective
+correction enabled. All rungs use the full 8-colour palette; after the geometry
+work, dropping to fewer colours buys nothing.</p>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>camera</th><th>rung</th><th class="num">bytes/frame</th><th class="num">vs. no-warp upper bound</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>good phone</td><td>P8 @ 8 px</td><td class="num">8,748</td><td class="num">−59.1%</td></tr>
+    <tr><td>webcam</td><td>P8 @ 8 px</td><td class="num">8,748</td><td class="num">−25.7%</td></tr>
+    <tr><td>potato</td><td>P8 @ 20 px</td><td class="num">1,182</td><td class="num">−69.9%</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">S4 · <code>artifacts/s4-frontier.csv</code>. The earlier
+no-warp numbers were published as upper bounds, and they were: the frontier fell
+by a quarter to seventy per cent once realistic hand-held geometry was
+applied.</span>
+
+<p>End-to-end, running the whole chain — chunk, gzip, manifest, RaptorQ, header
+and CRC, cells, corner markers, simulated channel, rectify, fountain, per-chunk
+BLAKE3, write at offset, whole-file BLAKE3 — with nothing stubbed:</p>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>camera</th><th>payload</th><th class="num">frames</th><th class="num">KB/s @ 15 FPS</th><th class="num">KB/s @ 30 FPS</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>good, hand-held</td><td>1 MB text</td><td class="num">44</td><td class="num">357.5</td><td class="num">714.9</td></tr>
+    <tr><td>webcam, hand-held</td><td>1 MB text</td><td class="num">44</td><td class="num">357.5</td><td class="num">714.9</td></tr>
+    <tr><td>potato, hand-held</td><td>1 MB text</td><td class="num">320</td><td class="num">49.2</td><td class="num">98.3</td></tr>
+    <tr><td>good, hand-held</td><td>1 MB blob</td><td class="num">120</td><td class="num">131.1</td><td class="num">262.1</td></tr>
+    <tr><td>webcam, hand-held</td><td>1 MB blob</td><td class="num">122</td><td class="num">128.9</td><td class="num">257.8</td></tr>
+    <tr><td>potato, hand-held</td><td>1 MB blob</td><td class="num">892</td><td class="num">17.6</td><td class="num">35.3</td></tr>
+    <tr><td>webcam + rolling-shutter tear</td><td>1 MB blob</td><td class="num">180</td><td class="num">87.4</td><td class="num">174.8</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite"><code>artifacts/e2e-report.txt</code>. &ldquo;blob&rdquo; is
+incompressible; &ldquo;text&rdquo; compresses, which is why it is 2.7× faster —
+gzip delivers more file bytes than the wire carried. <strong>The frame rate is
+assumed, not measured</strong>: nothing in this repository has yet timed a real
+screen or a real camera.</span>
+
+<p>Plan for the blob row, not the text row, unless you know your payload
+compresses. Photos, video and archives do not.</p>
+
+<h3>Where the light goes</h3>
+
+<p>Of every cell the screen lights up, this much reaches the file (good or
+webcam, hand-held, 1 MB incompressible blob):</p>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>stage</th><th class="num">bytes/frame</th><th class="num">cost</th><th class="num">cumulative</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>raw cell bits on screen</td><td class="num">12,150</td><td class="num">—</td><td class="num">100.0%</td></tr>
+    <tr><td>corner markers + margin</td><td class="num">8,991</td><td class="num">−26.0%</td><td class="num">74.0%</td></tr>
+    <tr><td>colour calibration strip</td><td class="num">8,910</td><td class="num">−0.9%</td><td class="num">73.3%</td></tr>
+    <tr><td>frame header band</td><td class="num">8,748</td><td class="num">−1.8%</td><td class="num">72.0%</td></tr>
+    <tr><td>fountain block id</td><td class="num">8,744</td><td class="num">−0.0%</td><td class="num">72.0%</td></tr>
+    <tr><td>symbol padding</td><td class="num">8,740</td><td class="num">−0.0%</td><td class="num">71.9%</td></tr>
+    <tr><td>gzip, on incompressible input</td><td class="num">8,738</td><td class="num">−0.0%</td><td class="num">71.9%</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite"><code>artifacts/e2e-waterfall.csv</code>. The four corner
+markers and their quiet margin are by far the largest single cost — a quarter of
+the screen, spent so the receiver can find the grid at all. On the coarsest rung
+it is 34.4%.</span>
+
+<h2 id="integrity">Integrity</h2>
+
+<div class="scroll">
+<table>
+  <tbody>
+    <tr><td>false accepts, 101,000 deliberately corrupted frames</td><td class="num"><strong>0</strong></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;of which dropped</td><td class="num">99,691</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;of which accepted and byte-identical anyway</td><td class="num">309</td></tr>
+    <tr><td>frame header size</td><td class="num">25 B</td></tr>
+    <tr><td>header overhead per frame</td><td class="num">1.5–2.7%</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">S2 · <code>artifacts/s2-integrity.txt</code>. Corruption swept
+from one symbol up to 30% of every cell in the frame. The 309 accepted frames had
+their corruption land entirely in padding outside the CRC-covered bytes, and every
+one returned exactly the right data. Not one corrupt payload was ever presented as
+truth.</span>
+
+<p>End to end, the human-facing guarantee: the sender's six-character display
+code and the receiver's matched, and the &ldquo;need more&rdquo; counter fell
+monotonically from 217 to 0 across 218 readings. The largest integer a human would
+have had to read anywhere in that run was 217.</p>
+
+<h2 id="fountain">Fountain coding</h2>
+
+<div class="scroll">
+<table>
+  <tbody>
+    <tr><td>decodes run (0–70% frame loss × 3 chunk sizes × 3 capacities × 50 trials)</td><td class="num">3,600</td></tr>
+    <tr><td>successful</td><td class="num">3,600</td></tr>
+    <tr><td>decoded at exactly the minimum block count</td><td class="num">3,589 (99.69%)</td></tr>
+    <tr><td>worst case anywhere</td><td class="num">minimum + 1 block</td></tr>
+    <tr><td>mean reception overhead</td><td class="num">0.011%</td></tr>
+    <tr><td>decode CPU, with loss</td><td class="num">~1.1 µs/KB</td></tr>
+    <tr><td>blocks available per source block before the stream must wrap</td><td class="num">2<sup>24</sup> = 12.9 days at 15 FPS</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">S3 · <code>artifacts/s3-overhead.csv</code>. The overhead is an
+absolute constant of at most one extra block, not a percentage — so it shrinks as
+files grow. The endless-stream ceiling is verified, not assumed: a test decodes
+from blocks drawn near the 2<sup>24</sup> limit, and another from blocks drawn
+entirely after ten times the minimum, having seen no original block at all.</span>
+
+<h2 id="pipeline">Chunking, compression, memory</h2>
+
+<div class="scroll">
+<table>
+  <tbody>
+    <tr><td>peak memory transferring a 1 GB file</td><td class="num"><strong>4.6 MB</strong> (0.0045×)</td></tr>
+    <tr><td>chunk size</td><td class="num">256 KB</td></tr>
+    <tr><td>manifest cost</td><td class="num">44 B/chunk (0.017%)</td></tr>
+    <tr><td>compression penalty vs whole-file gzip, at 256 KB</td><td class="num">2.6–2.9%</td></tr>
+    <tr><td>… at 64 KB</td><td class="num">10–11%</td></tr>
+    <tr><td>… at 1 MB</td><td class="num">0.6%</td></tr>
+    <tr><td>compressor throughput</td><td class="num">79.7–81.2 MB/s</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">S5 · <code>artifacts/s5-pipeline.txt</code>. Peak memory is a
+real <code>getrusage</code> high-water mark taken in a re-executed child process,
+not an assertion. Memory tracks chunk size, never file size.</span>
+
+<p>Two results worth keeping:</p>
+
+<ul>
+  <li><strong>The &ldquo;1–3% chunking penalty&rdquo; belongs to 256 KB, not to
+  chunking.</strong> At 64 KB it is 10–11%, because gzip's window is only 32 KB and
+  a 64 KB chunk spends half its length warming up a dictionary it then throws away.
+  Nothing may shrink the chunk below 256 KB to chase latency without re-running
+  that measurement.</li>
+  <li><strong>Compression is never on the critical path.</strong> The compressor
+  runs 600× to 4,500× faster than the channel it feeds. An earlier design tested
+  the first chunk and skipped gzip for incompressible input; that saved 258× the
+  CPU of a resource with three orders of magnitude of headroom, and bought a
+  branch, a flag and two code paths with it. It was removed. Everything is now
+  always chunked and always gzipped — incompressible input gets 0.02% larger,
+  which is 26 bytes on a 128 KB blob, against a channel that already spends 26% of
+  itself on corner markers.</li>
+</ul>
+
+<h2 id="geometry">Geometry</h2>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>camera</th><th class="num">marker detection RMS</th><th class="num">worst</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>good + warp</td><td class="num">0.88 px</td><td class="num">1.41 px</td></tr>
+    <tr><td>webcam + warp</td><td class="num">1.05 px</td><td class="num">1.82 px</td></tr>
+    <tr><td>potato + warp</td><td class="num">1.43 px</td><td class="num">1.96 px</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Clean decode survives the whole ±40° in-plane rotation range that was swept,
+35° yaw, 17° pitch, and barrel distortion to <em>k</em> = −0.20.</p>
+
+<span class="cite">S4 · <code>artifacts/s4-warped.png</code>,
+<code>artifacts/s4-rectified.png</code>, <code>artifacts/s4-frontier.csv</code>.</span>
+
+<div class="note">
+  <strong>The finding that changed the product.</strong>
+  <p>Rotation is not what costs you throughput — the decoder is clean to ±40°.
+  <em>Framing</em> is. A 16:9 screen rotated 15° needs more sensor height than it
+  has, so it can only fill 68% of the view, and lost screen area is lost
+  resolution. That is why the app asks you for a <strong>Screen shape</strong> and
+  why &ldquo;move closer&rdquo; is the first troubleshooting step: the rectifier is
+  essentially exact, but a 6-pixel cell that arrives as 3 sensor pixels cannot be
+  read by anything.</p>
+</div>
+
+<h2 id="engine">The engine itself</h2>
+
+<div class="scroll">
+<table>
+  <tbody>
+    <tr><td>WebAssembly bundle</td><td class="num">219.3 KB gzipped (414 KB raw)</td></tr>
+    <tr><td>aligned decode @ 1920×1080</td><td class="num">0.55 ms = 1,816 FPS</td></tr>
+    <tr><td>render a frame @ 1920×1080</td><td class="num">3.36 ms = 297 FPS</td></tr>
+    <tr><td>decode + full geometry solve</td><td class="num">76.5 ms = 13.1 FPS</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;find corner markers</td><td class="num">8.2 ms</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;fit pose + lens term</td><td class="num">30.6 ms</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;warp all ~2M pixels</td><td class="num">20.1 ms</td></tr>
+    <tr><td>JavaScript ↔ WebAssembly crossing</td><td class="num">~0.9 µs/frame, 0 bytes copied</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">S7 · <code>docs/contracts/wasm-api.md</code>,
+<code>docs/adr/0007-rust-core-wasm-browser-only.md</code>. Node 24, M-series Mac,
+median of 5 runs. Zero-copy is verified rather than claimed: 500 consecutive
+frames grow WebAssembly linear memory by 0 bytes, where a copying boundary would
+have moved 4.0 GiB.</span>
+
+<p>The decoding is sixty times faster than needed. Everything slow is geometry,
+and the fix is to stop re-solving it — the decoder caches the pose it fitted and
+re-fits only when a frame fails. In the end-to-end run, the pose was acquired once
+and never re-fitted at all except on the frames a simulated rolling-shutter tear
+destroyed. That figure is an upper bound on the cache's value: the simulator holds
+the camera perfectly still, and a real hand does not.</p>
+
+<h2 id="notmeasured">Numbers that are not on this page</h2>
+
+<ul>
+  <li><strong>Any real camera reading any real screen.</strong> Nothing. The
+  hardware spike is open.</li>
+  <li><strong>Frame rate.</strong> Every KB/s above divides a frame count by an
+  assumed 15 or 30 FPS. Neither has been measured against a real screen and a real
+  sensor.</li>
+  <li><strong>Screen tearing between an unsynchronised refresh and a camera
+  shutter.</strong> Not modelled in the simulator, and prior art suggests frame
+  synchronisation alone can nearly double throughput — likely the single largest
+  remaining unknown.</li>
+  <li><strong>Auto-exposure and autofocus hunting</strong> against a changing
+  image. Not modelled.</li>
+  <li><strong>Screen moiré</strong> and a real JPEG DCT (the simulator uses a crude
+  8×8 block-mean stand-in). Not modelled.</li>
+  <li><strong>The screen-capture path's 2.65 MB/s.</strong> Reported by the app and
+  quoted in the CLI documentation, but with no artifact in
+  <code>artifacts/</code> behind it.</li>
+</ul>
+
+<footer class="foot">
+  <p><a href="index.html">Guide</a> ·
+     <a href="status.html">Status &amp; limits</a> ·
+     <a href="../">Open the app</a> ·
+     <a href="https://github.com/muthuishere/lightpipe">Source on GitHub</a></p>
+</footer>
+
+</div>
+</body>
+</html>

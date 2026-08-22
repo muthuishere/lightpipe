@@ -52,7 +52,21 @@ Rules for this directory:
 ## Status of the underlying spikes
 
 S0–S3 are DONE with measured numbers in `LOG.md`. S4 (geometry) and S5 (pipeline)
-are **in flight** — code and artifacts exist, `PLAN.md` still marks both PENDING,
 and neither has a `LOG.md` row. Posts 05, 07 and 13 carry an in-progress banner and
 their numbers will move. S6 (real capture fixtures), S7 (wasm) and S8 (React app)
-are not started; nothing in this directory describes real hardware.
+
+## Status of the ladder (2026-08-22)
+
+S0–S5, S7 and S8 are all **DONE** with measured results in
+[`../spikes/PLAN.md`](../spikes/PLAN.md) and [`../spikes/LOG.md`](../spikes/LOG.md).
+**S6 (real capture fixtures) is the only open spike** — it needs a human and a camera,
+see [`../spikes/S6-CAPTURE-GUIDE.md`](../spikes/S6-CAPTURE-GUIDE.md).
+
+Two gaps these posts should not be read as covering:
+- **ADR-0011's layered broadcast is only partial in the shipped app.** The Rust core
+  demonstrates real interleaving (the `LAYERED BROADCAST` section of
+  `../../artifacts/e2e-report.txt` shows two cameras finishing off one stream), but
+  `crates/wasm/src/engine.rs` broadcasts a **single** profile chosen via `set_profile`.
+  That is why the UI exposes a human "Reliability vs speed" control instead.
+- **Resume has no UI.** The core proved it (S5) and `OpticalReceiver.resume()` exists in
+  the wasm layer, but nothing in the app accepts a resume code — it only displays one.

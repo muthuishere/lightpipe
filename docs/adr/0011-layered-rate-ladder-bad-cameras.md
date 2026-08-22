@@ -16,7 +16,9 @@ the sender interleaves several profiles into one continuous stream, and the rece
 harvests blocks from whichever layers it can decode. There is no handshake and
 nothing to negotiate.
 
-Profile ladder (final numbers come from the S1 sweep, not from this document):
+Profile ladder — **DRAFTED, AND SUPERSEDED BY THE MEASURED SECTION BELOW.**
+Every rung shipped as P8, not P2/P4: colour survives a bad camera, resolution does not.
+Read "Revised after S4" before using this table.
 
 | profile | cell px | palette | bits/cell | intended reader |
 |---|---|---|---|---|

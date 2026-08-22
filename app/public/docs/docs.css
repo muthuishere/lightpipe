@@ -1,0 +1,248 @@
+/* lightpipe docs — self-contained. No web fonts, no CDN, no external request. */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --panel-2: #f0f2f5;
+  --ink: #10131a;
+  --ink-2: #4a5261;
+  --ink-3: #767f8f;
+  --line: #d9dee6;
+  --accent: #0b57d0;
+  --ok: #0f7b3f;
+  --warn: #9a5b00;
+  --bad: #b3261e;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --radius: 10px;
+  --measure: 70ch;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0e12;
+    --panel: #151920;
+    --panel-2: #1d222b;
+    --ink: #eef1f6;
+    --ink-2: #b3bcca;
+    --ink-3: #7e8899;
+    --line: #2a313d;
+    --accent: #6ea8fe;
+    --ok: #56d68a;
+    --warn: #f0b429;
+    --bad: #ff6b60;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.62 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 28px 20px 96px;
+}
+
+/* ------------------------------------------------------------------ header */
+
+.masthead {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.masthead .name {
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  text-decoration: none;
+}
+.masthead .tag { color: var(--ink-3); font-size: 13px; }
+.masthead nav { margin-left: auto; display: flex; gap: 14px; flex-wrap: wrap; }
+.masthead nav a { font-size: 13px; }
+.masthead nav a[aria-current="page"] { color: var(--ink); font-weight: 600; }
+
+a { color: var(--accent); text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+
+/* -------------------------------------------------------------- structure */
+
+h1 {
+  font-size: clamp(28px, 5vw, 36px);
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  margin: 34px 0 10px;
+}
+h2 {
+  font-size: 21px;
+  letter-spacing: -0.015em;
+  margin: 48px 0 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+h3 { font-size: 16px; margin: 26px 0 6px; }
+p { margin: 0 0 14px; }
+.lede { font-size: 18px; color: var(--ink-2); }
+.muted { color: var(--ink-3); }
+.small { font-size: 14px; }
+
+ul, ol { margin: 0 0 14px; padding-left: 22px; }
+li { margin-bottom: 7px; }
+li > ul, li > ol { margin-top: 7px; }
+
+hr { border: 0; border-top: 1px solid var(--line); margin: 34px 0; }
+
+code, kbd, .mono { font-family: var(--mono); font-size: 0.88em; }
+code {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+kbd {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+pre {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 0 0 16px;
+  line-height: 1.55;
+}
+pre code { background: none; border: 0; padding: 0; font-size: 13.5px; }
+
+blockquote {
+  margin: 0 0 16px;
+  padding: 2px 0 2px 16px;
+  border-left: 3px solid var(--line);
+  color: var(--ink-2);
+}
+
+/* ------------------------------------------------------------------ boxes */
+
+.note {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--ink-3);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin: 0 0 18px;
+}
+.note > :last-child { margin-bottom: 0; }
+.note strong:first-child { display: block; margin-bottom: 4px; }
+.note.ok { border-left-color: var(--ok); }
+.note.warn { border-left-color: var(--warn); }
+.note.bad { border-left-color: var(--bad); }
+
+.cite {
+  display: block;
+  font-size: 13px;
+  color: var(--ink-3);
+  margin: -8px 0 18px;
+}
+.cite code { font-size: 12px; }
+
+/* ----------------------------------------------------------------- tables */
+
+.scroll { overflow-x: auto; margin: 0 0 18px; }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 14px;
+  min-width: 460px;
+}
+th, td {
+  text-align: left;
+  padding: 8px 12px 8px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+th {
+  font-weight: 600;
+  color: var(--ink-2);
+  border-bottom-color: var(--ink-3);
+  white-space: nowrap;
+}
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; padding-right: 0; }
+tbody tr:last-child td { border-bottom: 0; }
+
+/* --------------------------------------------------------------- pipeline */
+
+.pipe {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: stretch;
+  margin: 0 0 18px;
+  padding: 0;
+  list-style: none;
+  counter-reset: none;
+}
+.pipe li {
+  flex: 1 1 118px;
+  margin: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.pipe li b { display: block; font-size: 13.5px; margin-bottom: 2px; }
+.pipe li span { color: var(--ink-3); }
+
+/* ------------------------------------------------------------------ verdict */
+
+.verdict { display: grid; gap: 10px; margin: 0 0 18px; }
+.verdict div {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 11px 14px;
+  font-size: 14.5px;
+}
+.verdict .mark { font: 600 12px/1.4 var(--mono); white-space: nowrap; min-width: 6.5em; }
+.verdict .yes .mark, .mark.yes { color: var(--ok); }
+.verdict .no .mark, .mark.no { color: var(--bad); }
+.verdict .part .mark, .mark.part { color: var(--warn); }
+
+/* ------------------------------------------------------------------ footer */
+
+footer.foot {
+  margin-top: 60px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  font-size: 13.5px;
+  color: var(--ink-3);
+}
+footer.foot p { margin-bottom: 8px; }
+footer.foot a { color: var(--accent); }
+
+.next {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 30px 0 0;
+  font-size: 14px;
+}

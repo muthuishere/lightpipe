@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>lightpipe docs — move a file with light</title>
+<meta name="description" content="How to move a file between two devices as light — screen to camera, no network, no pairing, no cable.">
+<link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<div class="wrap">
+
+<header class="masthead">
+  <a class="name" href="index.html">lightpipe</a>
+  <span class="tag">documentation</span>
+  <nav>
+    <a href="index.html" aria-current="page">Guide</a>
+    <a href="numbers.html">Numbers</a>
+    <a href="status.html">Status &amp; limits</a>
+    <a href="../">Open the app</a>
+  </nav>
+</header>
+
+<h1>A file that crosses as light</h1>
+
+<p class="lede">One screen animates a grid of coloured cells. The other device's
+camera watches it. The file arrives. No network, no Bluetooth, no NFC, no
+pairing, no cable — at any point.</p>
+
+<p>There is nothing to connect and nothing to trust. The two devices never
+exchange an address, a key or a handshake; the only thing that crosses between
+them is photons. That is the entire point, and it is also the entire
+limitation.</p>
+
+<div class="next">
+  <a href="#quick-hosted">Quick start (hosted)</a>
+  <a href="#quick-cli">Quick start (CLI / offline)</a>
+  <a href="#receive-paths">Camera or screen?</a>
+  <a href="#trouble">Troubleshooting</a>
+</div>
+
+<h2 id="when">When to use it — and when not to</h2>
+
+<p>lightpipe is for small things that matter: an SSH or age key, a signed
+transaction, a wallet seed, a <code>.env</code>, a config file, a certificate, a
+PDF, a screenshot, a note, a snippet of text. It is <strong>not</strong> for
+video, disk images or photo libraries.</p>
+
+<p>Here is why, in the project's own measured numbers. The optical channel
+carries, hand-held at 15 frames per second:</p>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>receiver</th><th class="num">bytes per frame</th><th class="num">throughput</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>good phone or webcam, hand-held</td><td class="num">8,748</td><td class="num">128.9 KB/s</td></tr>
+    <tr><td>weak &ldquo;potato&rdquo; webcam, hand-held</td><td class="num">1,182</td><td class="num">17.6 KB/s</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Per-frame figures: S4 warped clean-decode frontier
+(<code>artifacts/s4-frontier.csv</code>, <code>docs/spikes/PLAN.md</code>).
+Throughput: end-to-end integration run on a 1 MB incompressible blob
+(<code>artifacts/e2e-report.txt</code>), at an <em>assumed</em> 15 FPS — nothing in
+the repo has yet measured a real screen against a real camera.</span>
+
+<p>So take one minute of 1080p phone video, roughly 100 MB:</p>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>at</th><th class="num">time to send 100 MB</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>128.9 KB/s (good camera)</td><td class="num">about 13 minutes</td></tr>
+    <tr><td>17.6 KB/s (weak webcam)</td><td class="num">about 95 minutes</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Sixty seconds of video costs between thirteen minutes and an hour and a half
+of holding a camera steady. That is not a bug to be fixed later; it is what a
+screen and a lens can carry. Send the key, not the movie.</p>
+
+<div class="note">
+  <strong>If you only want a file off your laptop and onto your phone, use qrcp.</strong>
+  <p><a href="https://github.com/claudiodangelis/qrcp">qrcp</a> serves the file over
+  your Wi-Fi and shows a QR code pointing at it. It is excellent, it is far
+  faster, and lightpipe is not trying to replace it. Reach for lightpipe when the
+  network is the thing you are not allowed to use: USB banned, radio banned,
+  an air-gapped machine, a device you do not want to join to anything.</p>
+</div>
+
+<h2 id="quick-hosted">Quick start — the hosted app</h2>
+
+<p>Nothing to install. Open <a href="../">the app</a> on both devices.</p>
+
+<ol>
+  <li><strong>On the sending device</strong>, press <strong>Send</strong>. Drop a
+  file on the panel, choose one, or press <kbd>⌘V</kbd> / <kbd>Ctrl+V</kbd> to
+  send whatever is on your clipboard. There is also a <strong>Text / note</strong>
+  tab — untyped text goes as markdown and is rendered on the other side.</li>
+
+  <li>Two settings sit under the file picker:
+    <ul>
+      <li><strong>Reliability vs speed</strong> — from <em>Most reliable
+      (slowest)</em> through <em>Reliable</em>, <em>Balanced</em>, <em>Fast</em>, to
+      <em>Fastest (needs a great camera)</em>. <em>Auto — pick for me</em> is the
+      default and is a safe middle setting. Settings the engine cannot actually
+      round-trip in this build are greyed out rather than offered.</li>
+      <li><strong>Screen shape</strong> — <em>Auto — match this device</em>,
+      <em>Landscape</em> (1920&nbsp;×&nbsp;1080, for a laptop camera),
+      <em>Portrait</em> (1080&nbsp;×&nbsp;1920, for a phone held upright), or
+      <em>Fill this screen exactly</em>. This is not cosmetic: whatever fraction of
+      the camera's view the sending screen fails to fill is throughput thrown
+      away, so the picture should be the shape of the thing looking at it.</li>
+    </ul>
+  </li>
+
+  <li>Check the <strong>Manifest</strong> panel. It shows the name, the type, the
+  size on the wire, the chunk count, and a <strong>display code</strong> — six
+  characters. Memorise it or leave it on screen; it is the whole integrity
+  check.</li>
+
+  <li>Press <strong>Start sending</strong>, then <strong>Full screen</strong>.
+  The screen now animates. It will keep animating until you stop it — the sender
+  has no idea whether anyone is watching.</li>
+
+  <li><strong>On the receiving device</strong>, press <strong>Receive</strong>.
+  Under <em>Where are the pixels coming from?</em> pick <em>Camera — point it at
+  the other screen</em>, then <strong>Start receiving</strong> and allow camera
+  access.</li>
+
+  <li>Fill the camera's view with the sending screen. Watch the <strong>picture
+  quality</strong> bar — it tells you plainly whether you are sharp (&ldquo;Sharp.
+  Hold it there.&rdquo;) or need to move closer. Then watch <strong>need
+  more</strong> count down.</li>
+
+  <li>When the receiver reads <strong>COMPLETE ✓</strong> followed by six
+  characters, <strong>compare those six characters with the sending screen</strong>.
+  If they match, what arrived is byte-for-byte identical. If they do not, throw it
+  away and start again. Then press <strong>Save</strong> — and stop the
+  sender.</li>
+</ol>
+
+<div class="note">
+  <strong>No hardware? Try the Loopback demo tab first.</strong>
+  <p>It runs both halves in one tab: the receiver reads the sender's own canvas
+  through a shrink-and-blur stage that stands in for a camera. Every step is
+  real — frames, unreadable frames, pieces completing, the final code
+  comparison. It is the fastest way to understand what you are about to do with
+  two real devices. Under <em>Pretend the camera is</em> you can pick anything from
+  <em>Good phone camera</em> down to <em>Too bad to read</em>.</p>
+</div>
+
+<h2 id="quick-cli">Quick start — the CLI, fully offline</h2>
+
+<p>The CLI serves the entire app — React bundle and the Rust/WebAssembly core —
+from files inside the npm package. No CDN, no fetch, no update check, no
+telemetry. Unplug the machine and it behaves identically.</p>
+
+<pre><code>npx lightpipe send report.pdf      # serve, open a browser, start broadcasting
+npx lightpipe send --text "hi"     # a literal string, sent as markdown
+cat notes.md | npx lightpipe send  # stdin
+npx lightpipe receive camera       # capture from the webcam (the default)
+npx lightpipe receive screen       # capture a screen or window
+npx lightpipe receive --out ./in   # write the finished file straight to disk
+npx lightpipe serve                # just serve; choose a mode in the browser</code></pre>
+
+<div class="note warn">
+  <strong>Not published to npm yet.</strong>
+  <p><code>cli/package.json</code> declares <code>lightpipe</code> at version
+  <code>0.1.0</code>, but there is no publish step in this repository's CI and no
+  release has been cut, so <code>npx lightpipe</code> will not resolve today.
+  Build it from the repo instead:</p>
+  <pre><code>npm --prefix cli install
+npm --prefix cli run build     # produces cli/public/
+node cli/bin/lightpipe.js send report.pdf</code></pre>
+</div>
+
+<h3>What is automatic and what needs a click</h3>
+
+<div class="scroll">
+<table>
+  <tbody>
+    <tr><td>loading the payload and starting the broadcast</td><td>automatic — rendering frames needs no user gesture</td></tr>
+    <tr><td>fullscreen</td><td>one click. Browsers reject <code>requestFullscreen()</code> without a real gesture. Press the button: frame size is what a camera can read, so this is throughput, not cosmetics</td></tr>
+    <tr><td>camera permission</td><td>one click, the first time an origin asks</td></tr>
+    <tr><td><code>receive screen</code></td><td>one click, then the OS window picker. <code>getDisplayMedia</code> will not open without a real gesture</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Source: <code>cli/README.md</code>, <code>docs/cli.md</code>.</span>
+
+<h3>No certificates, ever</h3>
+
+<p><code>http://localhost</code> is already a secure context, which is all that
+<code>getUserMedia</code> and <code>getDisplayMedia</code> require. A desktop can
+send or receive there with no TLS at all; a phone uses the hosted HTTPS site. So
+lightpipe generates no certificate, creates no certificate authority, and never
+writes a private key anywhere. <code>--https --cert --key</code> exists only to
+serve a certificate you already have.</p>
+
+<h3><code>receive --out &lt;dir&gt;</code></h3>
+
+<p>The one thing only the CLI can do: the page posts the finished file back and
+the CLI writes it to disk — no download dialog. It is off unless you ask for it,
+loopback-only by default, gated by a per-run 24-byte token, the filename is
+reduced to a single harmless path segment, nothing is ever overwritten, and the
+bytes are checked against a SHA-256 the page reports before anything is
+written.</p>
+
+<p>Be clear about what that SHA-256 covers: it verifies the <em>transport hop</em>,
+page to disk. It is not the optical integrity check. The six-character display
+code, which you compare by eye against the sending screen, is.</p>
+
+<h2 id="receive-paths">Two ways to receive — and which one to want</h2>
+
+<p>The app offers three sources under <em>Where are the pixels coming from?</em>:
+<em>Camera</em>, <em>Screen or window</em>, and <em>Built-in demo</em>. The first two
+are real, and they are not close to each other in speed.</p>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>path</th><th class="num">reported rate</th><th>why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Screen or window capture</td><td class="num">2.65 MB/s</td><td>pixel-perfect grab: no lens, no perspective, no lighting, no chroma subsampling. The decoder samples the grid where it knows the grid is</td></tr>
+    <tr><td>Camera</td><td class="num">125.8 KB/s</td><td>a lens, a pose and a hand — every frame has to be located and geometrically corrected before a single byte is read</td></tr>
+  </tbody>
+</table>
+</div>
+<span class="cite">Reported in <code>docs/cli.md</code> and printed by the CLI
+(<code>cli/src/cli.js</code>) as the app's own measured figures. Unlike every
+other number on this site, these two have no artifact in <code>artifacts/</code>
+backing them — treat them as live app readings, not as a spike result.</span>
+
+<p>Roughly a 21× difference, and the reason is not mysterious. Profiling the
+compiled wasm decoder at 1920&nbsp;×&nbsp;1080 found that the actual decoding —
+CRC, symbol sampling, bit unpacking — costs <strong>0.55&nbsp;ms per frame, about
+1,816 FPS</strong>. Everything expensive is geometry: finding the four corner
+markers (8.2&nbsp;ms), fitting the pose and lens term (30.6&nbsp;ms), warping the
+frame (20.1&nbsp;ms). A screen capture skips all of it.</p>
+<span class="cite">Source: <code>docs/adr/0015-cache-the-homography.md</code>,
+<code>docs/contracts/wasm-api.md</code>.</span>
+
+<div class="note ok">
+  <strong>The case where this is the right tool, not a curiosity.</strong>
+  <p>You are on an air-gapped or locked-down machine and you reach it over VNC,
+  RDP or a KVM-over-IP console. Files cannot leave it — no share, no clipboard, no
+  USB. But you <em>can see its screen</em>. Run the sender there, and on your own
+  machine capture the remote-desktop window directly: <code>lightpipe receive
+  screen</code>, or the <em>Screen or window — capture it directly</em> source in
+  the app. The bytes leave through the pixels you were already allowed to look
+  at, at the pixel-perfect rate rather than the camera rate.</p>
+</div>
+
+<p>Two things to get right when the picker appears: share the window that is
+<em>showing the code</em> (or the whole screen it sits on), and make sure nothing
+is covering it — anything on top of the code is a hole in the picture. Your
+browser will show its own &ldquo;you are sharing your screen&rdquo; indicator; that is
+normal and cannot be turned off.</p>
+
+<p>There is a checkbox, <strong>Skip the alignment search (faster)</strong>, on by
+default for this source. It assumes the captured pixels are a one-to-one copy of
+the sending screen. If the window is scaled or windowed and nothing decodes, the
+app turns the search back on by itself and tells you it did.</p>
+
+<p>If you are receiving by screen capture, the sending side can safely use its
+<strong>Fastest</strong> setting. Only do that if the other side really is
+capturing a screen — a camera will not keep up.</p>
+
+<h2 id="how">How it works, in one screen</h2>
+
+<ul class="pipe">
+  <li><b>chunk</b><span>the file is split into 256 KB pieces</span></li>
+  <li><b>gzip</b><span>every piece compressed on its own</span></li>
+  <li><b>fountain</b><span>each piece becomes an endless stream of distinct blocks</span></li>
+  <li><b>cells</b><span>blocks packed into a grid of coloured squares</span></li>
+  <li><b>frames</b><span>grid drawn with corner markers and a colour reference row</span></li>
+  <li><b>camera</b><span>the other device watches the screen</span></li>
+  <li><b>decode</b><span>find the grid, read the cells, rebuild the piece, write it</span></li>
+</ul>
+
+<p>Four ideas carry the whole design:</p>
+
+<ul>
+  <li><strong>Chunking makes progress real.</strong> Each piece is compressed and
+  coded on its own, so memory stays bounded and a transfer that dies at 70% keeps
+  70% of the work. Measured: a 1 GB file transfers with a
+  <strong>4.6 MB peak memory footprint</strong> — 0.0045× the file size.</li>
+
+  <li><strong>Fountain coding makes lost frames normal.</strong> The sender emits
+  an endless stream of <em>distinct</em> coded blocks; the receiver rebuilds a piece
+  from any N of them, in any order. A blurred, torn or missed frame is not an
+  error path, it is Tuesday. Measured cost of the coding itself: across 3,600
+  decodes at drop rates from 0% to 70%, <strong>99.69% needed exactly the minimum
+  number of blocks</strong> and the worst case anywhere needed one extra.</li>
+
+  <li><strong>There is no back-channel.</strong> Because the stream is rateless,
+  the receiver never has to say <em>which</em> blocks it missed — only <em>how
+  many more</em>. That is one small integer a human can read off a screen. It also
+  means the sender is blind: it cannot know whether anyone is watching, so it
+  loops forever and you stop it.</li>
+
+  <li><strong>A bad frame is dropped, never believed.</strong> Every frame carries
+  a 25-byte header with a CRC32. If it does not validate, the whole frame becomes
+  an erasure — which the fountain layer already handles perfectly. Measured across
+  101,000 deliberately corrupted frames: <strong>zero false accepts</strong>. Not
+  one corrupt payload was ever presented as truth.</li>
+</ul>
+
+<p>It is not QR. QR spends most of its area on finder patterns, timing patterns
+and alignment blocks so a phone can read a crumpled poster at an angle. lightpipe
+has a flat, self-illuminated screen at a fixed distance, so it uses a format
+built for that channel instead.</p>
+
+<p>If you want the real depth — why the palette is the corners of the RGB cube,
+why symbol error rate is <em>non-monotonic</em> in cell size, how a lens
+distortion term nobody can observe from four points is recovered anyway — the
+project keeps thirteen standalone explainers in
+<a href="https://github.com/muthuishere/lightpipe/tree/main/docs/principles"><code>docs/principles/</code></a>,
+and a decision record for every option it closed in
+<a href="https://github.com/muthuishere/lightpipe/tree/main/docs/adr"><code>docs/adr/</code></a>.
+The <a href="numbers.html">Numbers</a> page here collects what has actually been
+measured.</p>
+
+<h2 id="trouble">What to expect, and what to do when it stalls</h2>
+
+<h3>Expect this — it is not going wrong</h3>
+<ul>
+  <li><strong>Frames that do not read.</strong> The <em>unreadable</em> counter goes
+  up and the app labels it &ldquo;fine&rdquo;, because it is. The picture repeats.</li>
+  <li><strong>The sender showing no progress at all.</strong> It genuinely cannot
+  know. All real status lives on the receiver.</li>
+  <li><strong>The sender never stopping.</strong> By design. Stop it yourself when
+  the receiving screen reads COMPLETE.</li>
+  <li><strong>A tiny file showing a still image instead of an animation.</strong>
+  If the whole payload fits in one picture, animating it would only make it harder
+  to catch, so the app holds it.</li>
+</ul>
+
+<h3>If the receiver is not decoding</h3>
+<ul>
+  <li><strong>Fill the frame.</strong> This is the single biggest lever. The
+  geometry work measured that a hand-held camera framing the screen at 80% and
+  slightly off-axis is where the throughput goes — a 6-pixel cell that arrives as
+  3 sensor pixels is unreadable. Move closer until the sending screen fills the
+  view.</li>
+  <li><strong>Go fullscreen on the sender.</strong> Same reason. It is one
+  click.</li>
+  <li><strong>Hold steady, and get light on it.</strong> Watch the <em>picture
+  quality</em> bar rather than guessing: above 75% it says &ldquo;Sharp. Hold it
+  there.&rdquo;</li>
+  <li><strong>Kill glare and reflections.</strong> A glossy panel bouncing a lamp
+  back is a hole in the picture.</li>
+  <li><strong>Turn off macOS Center Stage.</strong> This one is specific and it
+  will waste your afternoon otherwise. Center Stage re-frames the camera by itself,
+  mid-transfer. The decoder caches the geometry it solved on the first frame and
+  reuses it precisely <em>because</em> the camera is not supposed to teleport between
+  exposures; a silent re-frame invalidates that cached pose, and the transfer
+  stalls until it re-fits. Same logic applies to any auto-framing or
+  &ldquo;follow me&rdquo; camera feature.</li>
+  <li><strong>Turn off Night Shift, f.lux, and any blue-light filter</strong> on the
+  <em>sending</em> screen. Every frame carries its own colour reference row, but a
+  global colour cast is still the wrong thing to hand it.</li>
+  <li><strong>Fix the display brightness.</strong> Auto-brightness is a slow gain
+  drift that nothing downstream can see coming.</li>
+  <li><strong>Drop the speed setting.</strong> <em>Most reliable (slowest)</em> uses
+  the biggest cells. It is slower and it finishes; that trade is the whole
+  point.</li>
+  <li><strong>If nothing decodes at all</strong>, the app says so out loud within
+  seconds — &ldquo;This video source is too low-resolution to read the code
+  from&rdquo; or &ldquo;Nothing is decoding&rdquo; with a frame count. It is designed
+  to fail loudly rather than sit at 0%.</li>
+</ul>
+
+<h3>Reading the receiver</h3>
+<ul>
+  <li><strong>need more</strong> — the only number that matters. It should fall.
+  It is the count of coded blocks still wanted for the piece in flight, and it is
+  the one integer a human would ever have to relay.</li>
+  <li><strong>pieces done</strong> — chunks finished out of the total. The little
+  grid below the progress bar shows which.</li>
+  <li><strong>unreadable</strong> — frames dropped on CRC. Expected. Free.</li>
+  <li><strong>already had</strong> — duplicate blocks. Harmless.</li>
+  <li><strong>display code</strong> — six characters, at the end. <strong>Compare it
+  with the sending screen.</strong> Nothing travels back the other way, so that eye
+  comparison is the integrity check, not a nicety.</li>
+</ul>
+
+<h2 id="honest">Before you rely on this</h2>
+
+<p>The project's culture is measurement, and it publishes what it has not
+measured as loudly as what it has. Two things you should know before trusting
+lightpipe with anything real:</p>
+
+<div class="note bad">
+  <strong>No real camera has ever decoded a real screen.</strong>
+  <p>Every number above the screen-capture row comes from a channel simulator —
+  a deliberately good one, with perspective warp, defocus, chroma subsampling,
+  white-balance drift, sensor noise, MJPEG artifacts, frame drops and
+  rolling-shutter tear — but a simulator. The spike that captures real webcam
+  fixtures and measures how wrong it is (S6) is written up, takes about ten
+  minutes and no code, and is <strong>still open</strong>. Frame tearing between an
+  unsynchronised screen refresh and a camera shutter, and auto-exposure hunting,
+  are not modelled at all.</p>
+</div>
+
+<p>The full verified-versus-not accounting is on the
+<a href="status.html">Status &amp; limits</a> page. Read it. It is short and it
+does not flatter the project.</p>
+
+<footer class="foot">
+  <p><a href="../">Open the app</a> ·
+     <a href="numbers.html">Numbers</a> ·
+     <a href="status.html">Status &amp; limits</a> ·
+     <a href="https://github.com/muthuishere/lightpipe">Source on GitHub</a></p>
+  <p>This documentation makes no external request of any kind — no fonts, no
+  scripts, no analytics. Neither does the app. That is not a stylistic choice.</p>
+</footer>
+
+</div>
+</body>
+</html>

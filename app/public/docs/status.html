@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>lightpipe — status and limits</title>
+<meta name="description" content="What lightpipe has verified, what it has not, and what is not implemented.">
+<link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<div class="wrap">
+
+<header class="masthead">
+  <a class="name" href="index.html">lightpipe</a>
+  <span class="tag">documentation</span>
+  <nav>
+    <a href="index.html">Guide</a>
+    <a href="numbers.html">Numbers</a>
+    <a href="status.html" aria-current="page">Status &amp; limits</a>
+    <a href="../">Open the app</a>
+  </nav>
+</header>
+
+<h1>Status and limits</h1>
+
+<p class="lede">What is verified, what is not, and what simply does not exist
+yet. Nothing on this page is softened.</p>
+
+<h2 id="verified">Verified</h2>
+
+<div class="verdict">
+  <div class="yes"><span class="mark">55 pass</span><span>Rust core tests.
+  <code>cargo test --workspace</code> — palette, bit codec, frame geometry, modem,
+  channel simulator, fountain, header, pipeline. No hardware, no browser.</span></div>
+
+  <div class="yes"><span class="mark">87 pass</span><span>WebAssembly harness
+  checks. <code>node harness/run.mjs</code> runs the whole chain through the
+  compiled wasm in Node, including a byte-identical round trip and the zero-copy
+  claim proved by checksumming inside linear memory rather than asserting
+  it.</span></div>
+
+  <div class="yes"><span class="mark">11 pass</span><span>Browser end-to-end
+  tests. Playwright against the <em>real</em> wasm core, not a mock: a markdown
+  note round-trips with matching codes, every offered quality setting completes,
+  portrait and landscape both decode, screen capture decodes with the alignment
+  search skipped, a windowed grab falls back instead of failing, an unreadable
+  source fails fast rather than hanging, and the send view never shows a fake
+  progress state.</span></div>
+
+  <div class="yes"><span class="mark">S0–S5</span><span>Six spikes closed with
+  measured results and inspectable artifacts: cell round-trip, degraded-channel
+  sweep, frame integrity, fountain coding across frames, geometry, and the chunked
+  pipeline. Every one is re-runnable by any human. See
+  <a href="numbers.html">Numbers</a>.</span></div>
+
+  <div class="yes"><span class="mark">solid</span><span>The screen-capture path.
+  Pixel-perfect frames, no geometry to solve, and it is the path with browser
+  tests behind it.</span></div>
+</div>
+
+<h2 id="notverified">Not verified</h2>
+
+<div class="verdict">
+  <div class="no"><span class="mark">open</span><span><strong>No real camera has
+  ever decoded a real screen.</strong> Not once. Every optical number in this
+  project comes from a channel simulator. The spike that fixes this — point a
+  phone and a laptop webcam at a displayed frame, save the PNGs, run the same
+  decoder over them — is written up as a ten-minute procedure needing no code, and
+  it has not been done.</span></div>
+
+  <div class="no"><span class="mark">unmodelled</span><span><strong>Frame
+  tearing</strong> between an unsynchronised screen refresh and a camera shutter.
+  Prior art suggests frame synchronisation alone can nearly double throughput, so
+  this is plausibly the largest single unknown in the project. A static capture
+  cannot even show it; it needs live video.</span></div>
+
+  <div class="no"><span class="mark">unmodelled</span><span><strong>Auto-exposure
+  and autofocus hunting</strong> against a changing image, and <strong>screen
+  moiré</strong>. The simulator's JPEG stage is also a crude 8×8 block-mean
+  stand-in, not a real DCT.</span></div>
+
+  <div class="no"><span class="mark">assumed</span><span><strong>Frame rate.</strong>
+  Every KB/s figure divides a measured frame count by an <em>assumed</em> 15 or 30
+  FPS. Neither end of that has been timed against real hardware.</span></div>
+
+  <div class="part"><span class="mark">unbacked</span><span>The screen-capture
+  path's <strong>2.65 MB/s</strong> and the camera path's <strong>125.8
+  KB/s</strong>. Reported as the app's own measured figures in the CLI
+  documentation, but no artifact in <code>artifacts/</code> records them.</span></div>
+</div>
+
+<div class="note">
+  <strong>What would count as a failure here.</strong>
+  <p>The project's own rule: any divergence between simulated and real symbol
+  error rate is a <em>bug in the simulator</em>, tracked as such — not an excuse
+  and not a footnote. Three outcomes are anticipated in writing. Real worse than
+  simulated means the simulator is too kind. Real better means the weak-camera
+  preset is pessimistic and the rate ladder is leaving throughput on the table.
+  Markers failing entirely would mean they are too small for real optics, and the
+  size clamp is admittedly a guess.</p>
+  <p class="small"><a href="https://github.com/muthuishere/lightpipe/blob/main/docs/spikes/S6-CAPTURE-GUIDE.md">The
+  capture procedure is here</a> — two devices, a room, ten minutes, no code. If
+  you have a phone and a laptop, you can close the biggest open question in this
+  project this afternoon.</p>
+</div>
+
+<h2 id="notimplemented">Not implemented</h2>
+
+<div class="verdict">
+  <div class="no"><span class="mark">missing</span><span><strong>Resume.</strong>
+  You cannot resume an interrupted transfer from the app. The receiver displays a
+  <em>resume code</em> and nothing anywhere accepts one — there is no input for it.
+  The machinery underneath exists and works: the core proved it (killed at 71.9%,
+  every retained chunk re-verified off disk, only the missing ones re-sent,
+  byte-identical result) and the WebAssembly layer exposes
+  <code>OpticalReceiver.resume()</code>. It is simply not wired to any user
+  interface. Today, an interrupted transfer starts over.</span></div>
+
+  <div class="part"><span class="mark">partial</span><span><strong>The manifest is
+  in-band, but only above the core.</strong> The core's 25-byte frame header has no
+  room for a manifest and its own pipeline transfers a file <em>only if the
+  receiver was told the manifest some other way</em> — that gap is recorded and
+  still open. The WebAssembly layer closes it in practice by broadcasting the
+  manifest as a pseudo-chunk (a reserved sequence number, fountain-coded like any
+  other chunk: a burst up front, then one frame in twenty-four). So the app works;
+  the core alone still does not.</span></div>
+
+  <div class="part"><span class="mark">partial</span><span><strong>The layered rate
+  ladder.</strong> The design is one broadcast carrying coarse and fine layers
+  together, so a good camera and a weak one both finish off the same stream — and
+  the core demonstrates exactly that end to end. The shipped engine does not: it
+  broadcasts <em>one</em> rung at a time, which is why the app asks a human to pick
+  <em>Reliability vs speed</em> instead of adapting on its own.</span></div>
+
+  <div class="no"><span class="mark">missing</span><span><strong>The validation
+  handshake.</strong> A decision was accepted to add a brief bidirectional phase
+  before any data frame — the receiver shows &ldquo;I can see you, quality
+  Q&rdquo;, the sender reads it and only then starts, and at the end the receiver
+  flashes &ldquo;done, you can stop&rdquo;. None of it is built. It was prompted by
+  a real observation: a hundred-byte note was broadcast 2,405 times over 40 seconds
+  because the sender had no way to learn it had been received on frame three. Today
+  the sender is still blind and still loops forever, and the app says so plainly
+  rather than faking a progress bar.</span></div>
+
+  <div class="no"><span class="mark">missing</span><span><strong>An npm
+  release.</strong> The CLI package is named and versioned but has no publish step
+  in CI and no release cut, so <code>npx lightpipe</code> does not resolve. Build
+  it from the repository.</span></div>
+</div>
+
+<h2 id="ceilings">Hard limits you will hit</h2>
+
+<div class="scroll">
+<table>
+  <tbody>
+    <tr><td>maximum file size the app accepts</td><td>512 MB — and that is a ceiling, not a target. The frozen WebAssembly contract takes the whole file as one array, so a streaming send cannot be expressed yet. The app refuses larger files with that explanation rather than failing obscurely</td></tr>
+    <tr><td>realistic file size</td><td>far smaller. At the weak-camera rate, 512 MB is roughly eight hours</td></tr>
+    <tr><td>video</td><td>no. See <a href="index.html#when">when to use it</a></td></tr>
+    <tr><td>direction</td><td>one way, one file at a time</td></tr>
+    <tr><td>the sender's knowledge of the receiver</td><td>none, by design</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="what-this-means">What this means for you</h2>
+
+<p>Use it today for what it is tested for: small, valuable payloads, with the
+receiving side a screen capture where you can arrange one, and a careful
+comparison of the six-character code at the end. That path has browser tests, a
+zero-false-accept integrity measurement behind it, and no unmeasured optics in
+the way.</p>
+
+<p>Treat the camera path as promising and unproven. It is thoroughly simulated
+and not yet observed. If you point a real camera at a real screen and it works,
+that is new information this project does not have; if it does not, that is a
+simulator bug worth reporting.</p>
+
+<footer class="foot">
+  <p><a href="index.html">Guide</a> ·
+     <a href="numbers.html">Numbers</a> ·
+     <a href="../">Open the app</a> ·
+     <a href="https://github.com/muthuishere/lightpipe">Source on GitHub</a></p>
+  <p>Test counts on this page were re-run against the repository, not copied from
+  a document.</p>
+</footer>
+
+</div>
+</body>
+</html>
