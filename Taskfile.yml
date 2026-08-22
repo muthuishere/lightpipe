@@ -101,6 +101,12 @@ tasks:
     cmds:
       - cd app && npm run dev
 
+  app:test:
+    desc: 'S8: build the app and run the Playwright e2e suite against the real core'
+    cmds:
+      - cd app && npx playwright install chromium
+      - npm --prefix app ci && npm --prefix app run build && npm --prefix app run test:e2e
+
   app:build:
     desc: 'Production build of the app, exactly as GitHub Pages builds it'
     deps: [wasm:build]

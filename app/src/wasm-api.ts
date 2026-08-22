@@ -79,6 +79,21 @@ export interface OpticalReceiver {
   takeChunk(): TakenChunk | null;
   isComplete(): boolean;
   free(): void;
+
+  /**
+   * NOT IN THE FROZEN CONTRACT. The shipped wasm bundle exposes it, labelled
+   * "test hook", and it is the only way to tell the decoder that a frame is
+   * already aligned so it can skip fiducial detection and the homography.
+   *
+   * That is exactly what a screen capture needs: a pixel-perfect grab has no
+   * perspective, no lens and no blur, and solving for a homography that is the
+   * identity burns the large majority of decode CPU for nothing.
+   *
+   * Optional here because the mock has no geometry stage at all. If it is
+   * missing, the caller must keep the geometry path and say so rather than
+   * pretend the work was skipped.
+   */
+  setGeometry?(on: boolean): void;
 }
 
 export interface OpticalSenderCtor {
@@ -111,4 +126,16 @@ export interface OpticalModule {
   readonly OpticalReceiver: OpticalReceiverCtor;
   /** Which implementation is loaded, so the UI can say so rather than pretend. */
   readonly implementation: "mock" | "wasm";
+
+  /**
+   * NOT IN THE FROZEN CONTRACT. Payload bytes one frame carries at a given
+   * profile and frame size.
+   *
+   * The UI needs this and cannot derive it. With a real fountain code the
+   * stream never repeats — every frame is a distinct coded block — so you
+   * cannot discover "how many frames is one pass" by watching for a repeat.
+   * Without this call the app cannot tell a person how long a transfer will
+   * take, or notice that their note fits in a single picture.
+   */
+  frameCapacity?(profile: Profile, width: number, height: number): number;
 }

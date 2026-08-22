@@ -1,13 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import optical from "../optical";
 import type { DecodeStats, FromWorker, ToWorker } from "../worker/protocol";
-import { listCameras, lockAutomatics, openCamera, type LockReport } from "../lib/camera";
+import {
+  listCameras,
+  lockAutomatics,
+  openCamera,
+  openScreen,
+  screenCaptureSupported,
+  screenLabel,
+  type LockReport,
+} from "../lib/camera";
 import { checkQuota, type QuotaReport } from "../lib/file-source";
 import { bytes, duration, int, rate } from "../lib/format";
 import { isImage, isMarkdown, isText, unwrapBlob, type EnvelopeMeta } from "../lib/envelope";
 import { renderMarkdown } from "../lib/markdown";
 
-type Source = "camera" | "loopback";
+type Source = "camera" | "screen" | "loopback";
 
 interface Sim {
   id: string;
@@ -17,6 +25,17 @@ interface Sim {
   /** CSS filter chain applied while downscaling — defocus plus photometric drift */
   filter: string;
   drop: number;
+  /**
+   * A pixel-perfect grab: no lens, no perspective, no lighting. Stands in for
+   * the screen-capture source, and the decoder can skip finding the grid.
+   */
+  screenLike?: boolean;
+  /**
+   * A screen grab of a WINDOW rather than the whole screen: pixel-perfect, but
+   * the grid no longer starts where the decoder would assume. Exercises the
+   * "skip the alignment search, then discover you could not" fallback.
+   */
+  windowed?: boolean;
 }
 
 /**
@@ -27,19 +46,37 @@ interface Sim {
  * 2D canvas can do cheaply. Treat these as a UI exerciser, not a measurement.
  */
 const SIMS: Sim[] = [
-  { id: "ideal", label: "ideal — screen grab, no degradation", w: 1920, h: 1080, filter: "none", drop: 0 },
-  { id: "good", label: "good — phone camera", w: 1280, h: 720, filter: "blur(0.4px)", drop: 0.02 },
+  {
+    id: "screen",
+    label: "Screen capture — pixel-perfect, nothing lost",
+    w: 1920,
+    h: 1080,
+    filter: "none",
+    drop: 0,
+    screenLike: true,
+  },
+  {
+    id: "screen-window",
+    label: "Screen capture of a window — pixel-perfect but not full screen",
+    w: 1920,
+    h: 1080,
+    filter: "none",
+    drop: 0,
+    screenLike: true,
+    windowed: true,
+  },
+  { id: "good", label: "Good phone camera", w: 1280, h: 720, filter: "blur(0.4px)", drop: 0.02 },
   {
     id: "webcam",
-    label: "webcam — soft, washed out, 10% frames lost",
+    label: "Typical webcam — soft, washed out, drops frames",
     w: 960,
     h: 540,
     filter: "blur(0.9px) contrast(0.82) brightness(1.06)",
     drop: 0.1,
   },
   {
-    id: "potato",
-    label: "potato — 640x360, defocused, washed out, 25% frames lost",
+    id: "weak",
+    label: "Weak webcam — blurry, dim, drops a quarter of frames",
     w: 640,
     h: 360,
     filter: "blur(1.2px) contrast(0.66) brightness(1.12) saturate(0.78)",
@@ -47,7 +84,7 @@ const SIMS: Sim[] = [
   },
   {
     id: "hopeless",
-    label: "hopeless — 320x180, unreadable (should fail loudly, ADR-0011)",
+    label: "Too bad to read — should fail loudly, not hang",
     w: 320,
     h: 180,
     filter: "blur(4px) contrast(0.35) brightness(1.25)",
@@ -73,7 +110,39 @@ const EMPTY: DecodeStats = {
   elapsedSec: 0,
   complete: false,
   lastReason: null,
+  geometryOn: true,
+  geometrySkipSupported: false,
 };
+
+/**
+ * Is this source giving us the sender's own pixels, unaltered?
+ *
+ * A screen capture is: no lens, no perspective, no lighting, no chroma
+ * subsampling. The decoder can sample the grid where it knows the grid is
+ * instead of searching for it. A camera never is.
+ */
+/**
+ * The engine reports failures in its own words. Say them in the user's.
+ * A receiver that cannot be created is almost always a source that is simply
+ * too low-resolution for the grid to survive.
+ */
+function humanError(raw: string): string {
+  if (raw.includes("OpticalReceiver.create")) {
+    return (
+      "This video source is too low-resolution to read the code from. " +
+      "Use a higher-resolution camera, move it closer so the other screen fills the view, " +
+      "or capture the screen directly instead of pointing a camera at it."
+    );
+  }
+  if (raw.includes("not initialised")) {
+    return "The decoder did not start up. Reload the page and try again.";
+  }
+  return raw;
+}
+
+function isAlignedSource(source: Source, preset: Sim): boolean {
+  return source === "screen" || (source === "loopback" && Boolean(preset.screenLike));
+}
 
 export interface ReceiverProps {
   senderCanvasRef: React.MutableRefObject<HTMLCanvasElement | null>;
@@ -83,6 +152,9 @@ export interface ReceiverProps {
 export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProps) {
   const [source, setSource] = useState<Source>("camera");
   const [sim, setSim] = useState("webcam");
+  const [captureLabel, setCaptureLabel] = useState<string | null>(null);
+  const [assumeAligned, setAssumeAligned] = useState(true);
+  const [fellBack, setFellBack] = useState<number | null>(null);
   const [running, setRunning] = useState(false);
   const [stats, setStats] = useState<DecodeStats>(EMPTY);
   const [error, setError] = useState<string | null>(null);
@@ -189,8 +261,11 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
             }
           })();
           break;
+        case "geometry-fallback":
+          setFellBack(m.framesTried);
+          break;
         case "error":
-          setError(m.message);
+          setError(humanError(m.message));
           break;
         case "ready":
           break;
@@ -206,8 +281,16 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
     setSaved(null);
     setStats(EMPTY);
     setDoneChunks(new Set());
+    setCaptureLabel(null);
+    setFellBack(null);
+    const preset = SIMS.find((x) => x.id === sim) ?? SIMS[0];
+    const aligned = isAlignedSource(source, preset) && assumeAligned;
     const w = ensureWorker();
-    w.postMessage({ type: "init", fileName: "received.bin" } satisfies ToWorker);
+    w.postMessage({
+      type: "init",
+      fileName: "received.bin",
+      geometry: !aligned,
+    } satisfies ToWorker);
 
     if (source === "camera") {
       try {
@@ -227,8 +310,27 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
         );
         return;
       }
+    } else if (source === "screen") {
+      try {
+        const stream = await openScreen();
+        streamRef.current = stream;
+        setCaptureLabel(screenLabel(stream));
+        setLock(null);
+        // The user can stop the share from the browser's own indicator.
+        stream.getVideoTracks()[0]?.addEventListener("ended", () => stop());
+        const v = videoRef.current;
+        if (v) {
+          v.srcObject = stream;
+          await v.play();
+        }
+      } catch (err) {
+        setError(
+          `Screen capture was not started: ${String(err)}. It needs a secure context (https or localhost) and you have to pick a window in the browser's dialog.`,
+        );
+        return;
+      }
     } else if (!senderActive) {
-      setError("Start the sender first — loopback reads the sender's own canvas.");
+      setError("Start the sender first — the built-in demo reads the sender's own canvas.");
       return;
     }
 
@@ -246,7 +348,7 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
       if (inFlight.current >= 2) return;
 
       let src: CanvasImageSource | null = null;
-      if (source === "camera") {
+      if (source === "camera" || source === "screen") {
         const v = videoRef.current;
         if (!v || v.readyState < 2) return;
         src = v;
@@ -259,19 +361,28 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
 
       try {
         let bitmap: ImageBitmap;
-        if (source === "loopback" && preset.filter !== "none") {
+        if (source === "loopback" && (preset.filter !== "none" || preset.windowed)) {
           const scratch = scratchRef.current ?? document.createElement("canvas");
           scratchRef.current = scratch;
           scratch.width = preset.w;
           scratch.height = preset.h;
           const sctx = scratch.getContext("2d", { alpha: false });
           if (!sctx) return;
+          // A pixel-perfect source must stay pixel-perfect: smoothing would
+          // blur the cell edges we are about to threshold.
+          sctx.imageSmoothingEnabled = !preset.screenLike;
           // The real core finds four corner fiducials and solves a homography,
           // so it needs the screen to sit INSIDE the frame with room around it,
           // exactly as a hand-held camera would see it. The mock has no
           // fiducial detection at all and needs an edge-to-edge grab, so the
           // inset is only applied when the real bundle is loaded.
-          const inset = optical.implementation === "wasm" ? Math.round(preset.w * 0.07) : 0;
+          // A camera sees the screen sitting INSIDE its frame with room around
+          // it, and the real core needs that to find the four corner markers.
+          // A screen grab has no such margin and needs none — it is the frame.
+          const inset =
+            preset.windowed || (optical.implementation === "wasm" && !preset.screenLike)
+              ? Math.round(preset.w * 0.07)
+              : 0;
           sctx.filter = "none";
           sctx.fillStyle = "#101014";
           sctx.fillRect(0, 0, preset.w, preset.h);
@@ -327,6 +438,8 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
   }
 
+  const activePreset = SIMS.find((x) => x.id === sim) ?? SIMS[0];
+  const alignedNow = isAlignedSource(source, activePreset) && !stats.geometryOn;
   const man = stats.manifest;
   const pct = man ? Math.min(1, stats.bytesWritten / Math.max(1, man.totalBytes)) : 0;
   const eta =
@@ -344,30 +457,38 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
       )}
 
       <div className="panel">
-        <h2>1 · Point at the sending screen</h2>
+        <h2>1 · Where are the pixels coming from?</h2>
         <p className="hint">
-          Decoding runs in a Worker — OPFS sync access handles require one (ADR-0008), and a
-          blocked main thread would cost frames.
+          Point a camera at the other screen, or — if you are already looking at that machine
+          over remote desktop — capture the window directly. Either way the file crosses as
+          light, never as a file transfer.
         </p>
         <div className="row">
           <label className="small muted">
             Source{" "}
             <select
               value={source}
-              onChange={(e) => setSource(e.target.value as Source)}
+              onChange={(e) => {
+                const next = e.target.value as Source;
+                setSource(next);
+                if (next === "loopback") setSim(sim);
+              }}
               disabled={running}
             >
-              <option value="camera">Camera</option>
-              <option value="loopback">Simulated loopback (this tab's sender)</option>
+              <option value="camera">Camera — point it at the other screen</option>
+              <option value="screen" disabled={!screenCaptureSupported()}>
+                Screen or window — capture it directly
+              </option>
+              <option value="loopback">Built-in demo — no hardware needed</option>
             </select>
           </label>
           {source === "loopback" && (
             <label className="small muted">
-              Simulated camera{" "}
+              Pretend the camera is{" "}
               <select value={sim} onChange={(e) => setSim(e.target.value)} disabled={running}>
-                {SIMS.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.label}
+                {SIMS.map((x) => (
+                  <option key={x.id} value={x.id}>
+                    {x.label}
                   </option>
                 ))}
               </select>
@@ -401,20 +522,68 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
           )}
         </div>
 
+        {source === "screen" && !running && (
+          <div className="notice" style={{ marginTop: 14 }}>
+            <strong>Two things to get right when you pick the window.</strong>
+            <span className="small">
+              Share the window that is <em>showing the code</em> — the remote-desktop window, or
+              the whole screen it sits on. And make sure nothing is covering it: anything on top
+              of the code is a hole in the picture. Your browser will show its own "you are
+              sharing your screen" indicator; that is normal and cannot be turned off.
+            </span>
+            <div className="small muted" style={{ marginTop: 8 }}>
+              A screen capture is pixel-perfect — no lens, no focus, no lighting — so the sending
+              side can safely use its fastest setting.
+            </div>
+            <label className="small muted" style={{ marginTop: 8, display: "block" }}>
+              <input
+                type="checkbox"
+                checked={assumeAligned}
+                onChange={(e) => setAssumeAligned(e.target.checked)}
+              />{" "}
+              Skip the alignment search (faster). Needs the sending window full screen and
+              unscaled. If nothing decodes, this turns itself back on.
+            </label>
+          </div>
+        )}
+
         <video
           ref={videoRef}
           className="preview"
-          style={{ marginTop: 14, display: source === "camera" && running ? "block" : "none" }}
+          style={{
+            marginTop: 14,
+            display: (source === "camera" || source === "screen") && running ? "block" : "none",
+          }}
           playsInline
           muted
         />
 
+        {running && source === "screen" && (
+          <div className="notice ok small" style={{ marginTop: 14 }}>
+            <strong>Capturing {captureLabel ?? "your selection"}</strong>
+            {stats.geometryOn
+              ? stats.geometrySkipSupported
+                ? "Searching for the code in the picture. That works whether or not the window is scaled, it just costs more time per frame."
+                : "This build cannot be told to skip the alignment search, so it is doing that work even though a screen grab does not need it. It still decodes correctly — it is simply slower than it has to be."
+              : "Reading the grid directly — no alignment search, because a screen grab does not need one."}
+          </div>
+        )}
+
+        {fellBack !== null && (
+          <div className="notice warn small" style={{ marginTop: 14 }}>
+            <strong>Turned the alignment search back on.</strong>
+            Nothing decoded in the first {fellBack} frames, so the captured window is not a
+            straight one-to-one copy of the sending screen — it is probably windowed or scaled.
+            Still decoding, just doing more work per frame.
+          </div>
+        )}
+
         {lock && source === "camera" && (
           <div className="notice small" style={{ marginTop: 14 }}>
-            <strong>Camera automatics</strong>
+            <strong>Camera settings</strong>
             {lock.note}
             <div className="muted" style={{ marginTop: 6 }}>
-              locked: {lock.applied.join(", ") || "none"} · refused:{" "}
+              pinned: {lock.applied.join(", ") || "none"} · refused:{" "}
               {lock.refused.join(", ") || "none"} · not offered:{" "}
               {lock.unsupported.join(", ") || "none"}
             </div>
@@ -423,8 +592,8 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
 
         {quota && (
           <div className="small muted" style={{ marginTop: 10 }}>
-            Storage: {bytes(quota.free)} free of {bytes(quota.quota)} (OPFS quota, ADR-0008)
-            {man && !quota.enough ? " — not enough for this transfer" : ""}
+            Space for the incoming file: {bytes(quota.free)} free of {bytes(quota.quota)}
+            {man && !quota.enough ? " — not enough for this one" : ""}
           </div>
         )}
       </div>
@@ -437,26 +606,36 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
       )}
 
       <div className="panel">
-        <h2>2 · Live</h2>
+        <h2>2 · Coming in</h2>
         <p className="hint">
-          Frames that fail to decode are erasures, not errors — the fountain code is built for
-          them (ADR-0004). What matters is that <span className="mono">need more</span> keeps
-          falling.
+          Some frames will not be readable. That is expected and costs nothing — the sending
+          screen keeps repeating until everything has arrived. The only number that matters is
+          <strong> need more</strong>, and it should keep falling.
         </p>
 
-        <div className="small muted" style={{ marginBottom: 4 }}>
-          alignment / cell separation
-        </div>
-        <div className={`bar${stats.quality > 0.75 ? " ok" : ""}`}>
-          <i style={{ width: `${(stats.quality * 100).toFixed(0)}%` }} />
-        </div>
-        <div className="small muted" style={{ marginTop: 4, marginBottom: 16 }}>
-          {stats.quality > 0.75
-            ? "Good separation — hold it there."
-            : stats.quality > 0.4
-              ? "Marginal. Move closer so the screen fills the frame, and steady the camera."
-              : "Poor. The cells are washing into each other — closer, steadier, less glare."}
-        </div>
+        {!alignedNow && (
+          <>
+            <div className="small muted" style={{ marginBottom: 4 }}>
+              picture quality
+            </div>
+            <div className={`bar${stats.quality > 0.75 ? " ok" : ""}`}>
+              <i style={{ width: `${(stats.quality * 100).toFixed(0)}%` }} />
+            </div>
+            <div className="small muted" style={{ marginTop: 4, marginBottom: 16 }}>
+              {stats.quality > 0.75
+                ? "Sharp. Hold it there."
+                : stats.quality > 0.4
+                  ? "Not quite. Move closer so the other screen fills the view, and hold steadier."
+                  : "Too soft to read. Get closer, hold still, clean the lens, and kill any glare."}
+            </div>
+          </>
+        )}
+
+        {alignedNow && (
+          <div className="small muted" style={{ marginBottom: 16 }}>
+            Nothing to line up — the pixels arrive exactly as they were drawn.
+          </div>
+        )}
 
         <div className="stats">
           <div className="stat">
@@ -464,7 +643,7 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
             <div className="v">{stats.neededMore < 0 ? "—" : int(stats.neededMore)}</div>
           </div>
           <div className="stat">
-            <div className="k">chunks</div>
+            <div className="k">pieces done</div>
             <div className="v">
               {int(stats.chunksComplete)}/{int(stats.chunkCount || 0)}
             </div>
@@ -477,33 +656,33 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
             </div>
           </div>
           <div className="stat">
-            <div className="k">goodput</div>
+            <div className="k">speed</div>
             <div className="v small">{rate(stats.bytesPerSec)}</div>
           </div>
           <div className="stat">
-            <div className="k">decode fps</div>
-            <div className="v">{stats.fps}</div>
+            <div className="k">time left</div>
+            <div className="v small">{duration(eta)}</div>
+          </div>
+          <div className="stat">
+            <div className="k">frames read</div>
+            <div className="v">{stats.fps}/s</div>
           </div>
           <div className="stat">
             <div className="k">frames seen</div>
             <div className="v small">{int(stats.framesSeen)}</div>
           </div>
           <div className="stat">
-            <div className="k">erasures</div>
+            <div className="k">unreadable</div>
             <div className="v small">
               {int(stats.erasures)}{" "}
               <span className="muted" style={{ fontWeight: 400 }}>
-                normal
+                fine
               </span>
             </div>
           </div>
           <div className="stat">
-            <div className="k">duplicates</div>
+            <div className="k">already had</div>
             <div className="v small">{int(stats.duplicates)}</div>
-          </div>
-          <div className="stat">
-            <div className="k">eta</div>
-            <div className="v small">{duration(eta)}</div>
           </div>
           <div className="stat">
             <div className="k">resume code</div>
@@ -532,9 +711,9 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
           <h2>3 · Done</h2>
           <div className="notice ok" style={{ marginBottom: 14 }}>
             <strong>COMPLETE ✓ {stats.displayCode ?? "??????"}</strong>
-            Compare that against the code on the sending screen. If they match, what you have is
-            byte-identical. If they do not, throw it away — there is no acknowledgement protocol,
-            this comparison is the integrity check (ADR-0005).
+            Check it against the code on the sending screen. If they match, what you have is
+            byte-for-byte identical. If they do not, throw it away and start again — comparing
+            these two codes by eye is the whole integrity check.
           </div>
           <div className="row" style={{ marginBottom: 14 }}>
             <div className="code big">{stats.displayCode ?? "??????"}</div>
@@ -586,7 +765,7 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
           <div className="small muted" style={{ marginTop: 12 }}>
             Received {bytes(stats.bytesWritten)} in {duration(stats.elapsedSec)} —{" "}
             {rate(stats.bytesPerSec)} across {int(stats.framesSeen)} frames, of which{" "}
-            {int(stats.erasures)} did not decode.
+            {int(stats.erasures)} could not be read.
           </div>
         </div>
       )}

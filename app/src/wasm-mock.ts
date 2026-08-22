@@ -836,6 +836,16 @@ class MockReceiver implements OpticalReceiver {
     return { index, ptr: this.stagePtr, len: off };
   }
 
+  /**
+   * The mock has no fiducial detection and no homography — it samples the grid
+   * directly, always. So it is permanently in the "geometry off" mode the real
+   * core has to be told about, and this is a genuine no-op rather than a stub
+   * that quietly ignores you.
+   */
+  setGeometry(_on: boolean): void {
+    void _on;
+  }
+
   isComplete(): boolean {
     if (!this.man) return false;
     for (let i = 0; i < this.man.chunkCount; i++) {
@@ -870,6 +880,13 @@ const mockModule: OpticalModule = {
   OpticalSender: MockSender,
   OpticalReceiver: MockReceiver,
   implementation: "mock",
+  frameCapacity: (profile, _width, _height) => {
+    void _width;
+    void _height;
+    // The mock's geometry is defined against the nominal 1920x1080 frame and
+    // scales with it, so capacity does not depend on the actual pixel size.
+    return geometryFor(PROFILE_CELL_PX[profile]).capacity;
+  },
 };
 
 export default mockModule;

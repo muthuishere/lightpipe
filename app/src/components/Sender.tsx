@@ -7,23 +7,75 @@ import { bytes, duration, int, rate } from "../lib/format";
 import { estimate, GOOD_BPS, POTATO_BPS } from "../lib/estimate";
 import { probeImage, reencode, swapExtension } from "../lib/image";
 import { isImage } from "../lib/envelope";
+import { fitFrame, planFrame, probeProfiles, type FramePlan } from "../lib/frame-plan";
 
 type Phase = "idle" | "reading" | "ready" | "sending";
 type Input = "file" | "text";
 
-const RESOLUTIONS: Array<{ id: string; label: string; w: number; h: number }> = [
-  { id: "1080", label: "1920 x 1080", w: 1920, h: 1080 },
-  { id: "720", label: "1280 x 720", w: 1280, h: 720 },
-  { id: "match", label: "Match this display", w: 0, h: 0 },
+/**
+ * The user-facing control is ONE trade-off: how forgiving of a bad camera
+ * versus how fast. "L0", "P8", "20 px cells" and "the potato rung" are our
+ * words, not theirs — the raw profile id stays available as a caption and a
+ * tooltip so we can still talk about it, but it never leads.
+ */
+/**
+ * Frame shape.
+ *
+ * Not cosmetic. S4 measured that screen area IS resolution: whatever fraction
+ * of the sensor the sending screen fails to fill is throughput thrown away. A
+ * phone held upright pointed at a landscape frame letterboxes it into roughly
+ * half the sensor, so the frame should be the shape of the thing looking at it.
+ *
+ * There is no back-channel, so the receiver cannot tell us what shape it is
+ * (ADR-0016 would fix this if the handshake is ever wired). Until then: default
+ * from this device, and let the person override.
+ */
+type Shape = "auto" | "landscape" | "portrait" | "match";
+
+const SHAPES: Array<{ id: Shape; label: string; caption: string }> = [
+  { id: "auto", label: "Auto — match this device", caption: "" },
+  { id: "landscape", label: "Landscape — laptop or desktop camera", caption: "1920 x 1080" },
+  { id: "portrait", label: "Portrait — phone held upright", caption: "1080 x 1920" },
+  { id: "match", label: "Fill this screen exactly", caption: "" },
 ];
 
-const PROFILES: Array<{ id: Profile; label: string }> = [
-  { id: "auto", label: "auto (20 px cells — the S4 potato rung)" },
-  { id: "L0", label: "L0 — 20 px, any camera" },
-  { id: "L1", label: "L1 — 14 px, cheap webcam" },
-  { id: "L2", label: "L2 — 10 px, decent webcam" },
-  { id: "L3", label: "L3 — 8 px, good webcam / phone" },
-  { id: "L4", label: "L4 — 6 px, phone, well lit, steady" },
+/** What "auto" resolves to. A touch device is almost certainly held upright. */
+function deviceShape(): "landscape" | "portrait" {
+  const coarse =
+    typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+  const tall = window.innerHeight > window.innerWidth;
+  return coarse || tall ? "portrait" : "landscape";
+}
+
+interface Speed {
+  id: Profile;
+  label: string;
+  help: string;
+}
+
+const SPEEDS: Speed[] = [
+  {
+    id: "auto",
+    label: "Auto — pick for me",
+    help: "A safe middle setting that works on most cameras.",
+  },
+  {
+    id: "L0",
+    label: "Most reliable (slowest)",
+    help: "Biggest blocks. Works on weak cameras, bad light and shaky hands.",
+  },
+  { id: "L1", label: "Reliable", help: "A good balance for a typical webcam." },
+  {
+    id: "L2",
+    label: "Balanced",
+    help: "Faster. Wants a decent camera and steady framing.",
+  },
+  { id: "L3", label: "Fast", help: "For a good phone camera, well lit and held still." },
+  {
+    id: "L4",
+    label: "Fastest (needs a great camera)",
+    help: "Densest picture. A phone camera up close, or a screen capture.",
+  },
 ];
 
 /** Cheap content hash of a frame, used only to detect when the stream repeats. */
@@ -52,11 +104,14 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [profile, setProfile] = useState<Profile>("auto");
-  const [resolution, setResolution] = useState("1080");
+  const [shape, setShape] = useState<Shape>("auto");
   const [fullscreen, setFullscreen] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [still, setStill] = useState(false);
   const [framesPerPass, setFramesPerPass] = useState(0);
+  const [plan, setPlan] = useState<FramePlan | null>(null);
+  // Which quality settings this engine actually round-trips. Probed once.
+  const [usable, setUsable] = useState<Set<Profile> | null>(null);
   const [stat, setStat] = useState({ frames: 0, fps: 0, chunk: 0, chunkCount: 0, elapsed: 0 });
   const [original, setOriginal] = useState<{
     meta: EnvelopeMeta;
@@ -92,6 +147,13 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
   );
 
   useEffect(() => {
+    // One-off capability probe. Cheap, and it means the UI never offers a
+    // setting that would silently decode nothing.
+    const id = window.setTimeout(() => setUsable(probeProfiles(optical)), 0);
+    return () => window.clearTimeout(id);
+  }, []);
+
+  useEffect(() => {
     const onFs = () => setFullscreen(Boolean(document.fullscreenElement));
     document.addEventListener("fullscreenchange", onFs);
     return () => document.removeEventListener("fullscreenchange", onFs);
@@ -113,14 +175,18 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
         const dims = isImage(m.mime) ? await probeImage(new Blob([payload as BlobPart], { type: m.mime })) : null;
         setOriginal({ meta: m, bytes: payload, dims });
       }
-      const s = optical.OpticalSender.create(enveloped, { profile, ...dims() });
+      const s = buildSender(enveloped);
       senderRef.current?.free();
       senderRef.current = s;
-      setManifest(s.manifest());
+      const man = s.manifest();
+      setManifest(man);
+      setFramesPerPass(passLength(man.totalBytes));
       setPhase("ready");
     },
-    // dims() reads refs and state at call time; profile is the only real dep
-    [profile],
+    // dims() and the frame plan are read at call time, so every piece of state
+    // they touch has to be a dependency or the sender is built from stale values.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [profile, shape, usable],
   );
 
   const takeFile = useCallback(
@@ -134,7 +200,7 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
           `${bytes(f.size)} is above the ${bytes(SAFE_LIMIT)} ceiling this build accepts. ` +
             `Not a browser limit — the frozen wasm contract's OpticalSender.create() takes the ` +
             `whole file as one Uint8Array, so a streaming send cannot be expressed yet. ` +
-            `ADR-0008 wants multi-GB; the contract needs a chunk-fed sender before that is real.`,
+            `Large files need a streaming send, which the core cannot express yet.`,
         );
         return;
       }
@@ -215,12 +281,79 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
     await load(original.meta, original.bytes, false);
   }
 
+  /**
+   * Build the sender against a frame the payload actually FILLS, falling back
+   * to the full frame if the core will not render the shrunken one.
+   */
+  function buildSender(payload: Uint8Array) {
+    const base = dims();
+    const p = fitFrame(optical, payload, {
+      totalBytes: payload.length,
+      requested: profile,
+      baseWidth: base.width,
+      baseHeight: base.height,
+      usable: usable ?? undefined,
+    });
+    try {
+      const s = optical.OpticalSender.create(payload, {
+        profile: p.profile,
+        width: p.width,
+        height: p.height,
+      });
+      setPlan(p);
+      return s;
+    } catch {
+      // The core refused that frame. Full size at the requested quality always
+      // works, and saying nothing would be worse than a slightly emptier frame.
+      const s = optical.OpticalSender.create(payload, { profile, ...base });
+      setPlan({
+        profile,
+        width: base.width,
+        height: base.height,
+        capacity: 0,
+        framesPerPass: 0,
+        fill: 0,
+        shrunk: false,
+      });
+      return s;
+    }
+  }
+
+  /**
+   * How many pictures is one full pass through the payload?
+   *
+   * This CANNOT be discovered by watching the frames: a real fountain code
+   * never repeats itself, so there is no cycle to detect. It has to come from
+   * the engine's own per-frame capacity. Falls back to detecting a repeat,
+   * which is only meaningful for the mock's round-robin stand-in.
+   */
+  function passLength(totalBytes: number): number {
+    const base = dims();
+    const p = planFrame(optical, {
+      totalBytes,
+      requested: profile,
+      baseWidth: base.width,
+      baseHeight: base.height,
+      usable: usable ?? undefined,
+    });
+    return p.framesPerPass;
+  }
+
   function dims() {
-    const r = RESOLUTIONS.find((x) => x.id === resolution)!;
-    if (r.w) return { width: r.w, height: r.h };
+    const resolved = shape === "auto" ? deviceShape() : shape;
+    if (resolved === "landscape") return { width: 1920, height: 1080 };
+    if (resolved === "portrait") return { width: 1080, height: 1920 };
+    // "match": the largest 16:9 (or 9:16) box that fits this display, in real
+    // device pixels, so the browser never resamples the grid on its way to the
+    // panel.
     const dpr = window.devicePixelRatio || 1;
     const aw = Math.floor((stageRef.current?.clientWidth ?? window.innerWidth) * dpr);
     const ah = Math.floor(window.innerHeight * dpr);
+    if (deviceShape() === "portrait") {
+      let h = Math.max(960, Math.min(ah, Math.floor((aw * 16) / 9)));
+      h -= h % 2;
+      return { width: Math.floor((h * 9) / 16), height: h };
+    }
     let w = Math.max(960, Math.min(aw, Math.floor((ah * 16) / 9)));
     w -= w % 2;
     return { width: w, height: Math.floor((w * 9) / 16) };
@@ -230,7 +363,7 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
     const data = bytesRef.current;
     if (!data) return null;
     senderRef.current?.free();
-    const s = optical.OpticalSender.create(data, { profile, ...dims() });
+    const s = buildSender(data);
     senderRef.current = s;
     setManifest(s.manifest());
     return s;
@@ -246,7 +379,14 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
     const t0 = performance.now();
     let frames = 0;
     let firstHash = -1;
-    let period = 0;
+    const known = plan?.framesPerPass || passLength(s.manifest().totalBytes);
+    let period = known;
+    setFramesPerPass(known);
+    if (known === 1) setStill(true);
+    // A payload that is only a few pictures long is far easier to capture if
+    // each one is held on screen instead of flickering past in 16 ms.
+    const holdMs = known > 0 && known <= 6 ? 400 : 0;
+    let lastDrawn = 0;
     const window1s: number[] = [];
 
     const tick = () => {
@@ -255,6 +395,12 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
         rafRef.current = requestAnimationFrame(tick);
         return;
       }
+      const now0 = performance.now();
+      if (holdMs && now0 - lastDrawn < holdMs) {
+        rafRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      lastDrawn = now0;
       const f = s.nextFrame();
       if (canvas.width !== f.width || canvas.height !== f.height) {
         canvas.width = f.width;
@@ -270,7 +416,7 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
       // Detect when the endless stream has come all the way round. A payload
       // small enough to fit one frame has period 1, and animating a single
       // still image would only make it harder to capture.
-      if (period === 0 && frames < 4096) {
+      if (period === 0 && frames < 4096 && !optical.frameCapacity) {
         const h = frameHash(f.ptr, f.len);
         if (firstHash < 0) {
           firstHash = h;
@@ -403,25 +549,62 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
 
           <div className="row" style={{ marginTop: 16 }}>
             <label className="small muted">
-              Layer{" "}
-              <select value={profile} onChange={(e) => setProfile(e.target.value as Profile)}>
-                {PROFILES.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label}
-                  </option>
-                ))}
+              Reliability vs speed{" "}
+              <select
+                value={profile}
+                title={`profile ${profile}`}
+                // Set once the engine has been probed, so a test (or a human
+                // reading the DOM) can tell "not yet checked" from "all fine".
+                data-probed={usable ? "true" : "false"}
+                onChange={(e) => setProfile(e.target.value as Profile)}
+              >
+                {SPEEDS.map((p) => {
+                  const off = usable !== null && !usable.has(p.id);
+                  return (
+                    <option
+                      key={p.id}
+                      value={p.id}
+                      disabled={off}
+                      title={`profile ${p.id}`}
+                    >
+                      {p.label}
+                      {off ? " — not available in this build" : ""}
+                    </option>
+                  );
+                })}
               </select>
             </label>
             <label className="small muted">
-              Frame{" "}
-              <select value={resolution} onChange={(e) => setResolution(e.target.value)}>
-                {RESOLUTIONS.map((r) => (
-                  <option key={r.id} value={r.id}>
+              Screen shape{" "}
+              <select value={shape} onChange={(e) => setShape(e.target.value as Shape)}>
+                {SHAPES.map((r) => (
+                  <option key={r.id} value={r.id} title={r.caption}>
                     {r.label}
                   </option>
                 ))}
               </select>
             </label>
+          </div>
+
+          <div className="small muted" style={{ marginTop: 8 }}>
+            {SPEEDS.find((x) => x.id === profile)?.help}{" "}
+            <span className="tag" title="internal profile id">
+              {profile}
+            </span>
+          </div>
+
+          {usable && usable.size < SPEEDS.length && (
+            <div className="small muted" style={{ marginTop: 6 }}>
+              Only {usable.size} of the {SPEEDS.length} speed settings work in this build of the
+              engine; the rest are greyed out because they would send a picture nothing can read.
+            </div>
+          )}
+
+          <div className="notice small" style={{ marginTop: 12 }}>
+            <strong>Receiving by screen capture instead of a camera?</strong>
+            Then there is no lens to lose anything and you can use{" "}
+            <strong>Fastest</strong> — a captured window arrives pixel-perfect. Only do that if
+            the other side is really capturing the screen; a camera will not keep up.
           </div>
 
           {note && (
@@ -447,8 +630,9 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
         <div className="panel">
           <h2>2 · Manifest</h2>
           <p className="hint">
-            The receiver must end up showing the same 6-character code. That comparison is the
-            integrity check — there is no acknowledgement protocol (ADR-0005).
+            The other screen must end up showing this same 6-character code. Nothing is sent
+            back the other way, so comparing these two codes by eye is how you know the file
+            arrived intact.
           </p>
           <div className="grid2">
             <dl className="kv">
@@ -478,6 +662,29 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
               <div className="code big">{manifest.displayCode}</div>
             </div>
           </div>
+          {plan && plan.capacity > 0 && plan.fill < 0.25 && (
+            <div className="notice warn small" style={{ marginTop: 14 }}>
+              <strong>Most of this picture is empty, and that is the engine, not a setting.</strong>
+              The blocks are drawn as a band across the top of the frame instead of filling it,
+              whatever size or quality is chosen. It still sends and decodes correctly — it is
+              just harder to read from a distance than it should be. Getting closer helps.
+            </div>
+          )}
+
+          {plan && plan.capacity > 0 && (
+            <div className="small muted" style={{ marginTop: 14 }}>
+              The picture is sized to the data: {plan.width} x {plan.height} at{" "}
+              <span className="tag" title="internal profile id">
+                {plan.profile}
+              </span>{" "}
+              carries {bytes(plan.capacity)} per picture, {Math.round(plan.fill * 100)}% of the
+              frame drawn on.{" "}
+              {plan.shrunk
+                ? "Shrunk to fit, then blown up to fill the screen — so the blocks are as big and as readable as they can be."
+                : `${int(plan.framesPerPass)} pictures per pass.`}
+            </div>
+          )}
+
           <div style={{ marginTop: 16 }}>
             {(() => {
               const e = estimate(manifest.totalBytes);
@@ -485,8 +692,9 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
                 return (
                   <div className="notice ok">
                     <strong>One frame. Instant on any camera.</strong>
-                    {bytes(manifest.totalBytes)} fits inside a single frame even at the coarsest
-                    measured rung, so the screen shows one still image rather than an animation.
+                    {bytes(manifest.totalBytes)} fits in one picture even at the most forgiving
+                    setting, so the screen shows a still image rather than an animation. Nothing
+                    flickers and any camera can catch it.
                   </div>
                 );
               }
@@ -498,12 +706,11 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
                       : `Roughly ${duration(e.secondsBest)} to ${duration(e.secondsWorst)}, depending on the camera.`}
                   </strong>
                   <span className="small">
-                    {int(e.framesGood)} frames on a good hand-held camera ({rate(GOOD_BPS)}) and{" "}
-                    {int(e.framesPotato)} on a potato webcam ({rate(POTATO_BPS)}), both at 15 FPS.
-                    Those two ends are S4's measured warped frontier, not a guess — and a bad
-                    camera is slower, never a failure (ADR-0011). The sender cannot see the
-                    receiver, so this is a range and not a countdown; the receiving screen shows
-                    the real one.
+                    {int(e.framesGood)} pictures on a good hand-held camera ({rate(GOOD_BPS)}), or{" "}
+                    {int(e.framesPotato)} on a weak webcam ({rate(POTATO_BPS)}). Both ends of that
+                    range are measured, not guessed. A poor camera is slower — never a failure.
+                    This side cannot see the receiver, so it is a range and not a countdown; the
+                    receiving screen shows the real one.
                   </span>
                 </div>
               );
@@ -514,10 +721,10 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
             <div className="panel inner" style={{ marginTop: 14 }}>
               <h2>Shrink it first?</h2>
               <p className="hint">
-                gzip cannot shrink an already-compressed image (ADR-0014 compresses it anyway,
-                and gains nothing). On this channel size is time — re-encoding to WebP is
-                usually the difference between seconds and minutes. Nothing is applied until
-                you press the button.
+                Photos and screenshots are already compressed, so nothing further can be
+                squeezed out of them on the way. Here size is time — re-encoding is usually the
+                difference between seconds and minutes. Nothing changes until you press the
+                button, and you can always go back to the original.
               </p>
               <div className="row">
                 <label className="small muted">
@@ -594,17 +801,23 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
           </button>
           <div className="stats" style={{ flex: 1, minWidth: 320 }}>
             <div className="stat">
-              <div className="k">{still ? "frames" : "frames sent"}</div>
-              <div className="v">{still ? "1 — still" : int(stat.frames)}</div>
+              <div className="k">pictures shown</div>
+              <div className="v">{int(stat.frames)}</div>
             </div>
             <div className="stat">
-              <div className="k">fps</div>
-              <div className="v">{still ? "—" : stat.fps}</div>
+              <div className="k">per second</div>
+              <div className="v">{stat.fps}</div>
             </div>
             <div className="stat">
-              <div className="k">one pass</div>
+              <div className="k">picture</div>
               <div className="v small">
-                {framesPerPass ? `${int(framesPerPass)} frames` : "measuring…"}
+                {plan ? `${plan.width}x${plan.height}` : "—"}
+              </div>
+            </div>
+            <div className="stat">
+              <div className="k">one full pass</div>
+              <div className="v small">
+                {framesPerPass ? `${int(framesPerPass)} pictures` : "—"}
               </div>
             </div>
             <div className="stat">
@@ -632,28 +845,29 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
 
       {sending && !fullscreen && still && (
         <div className="notice ok" style={{ marginTop: 16 }}>
-          <strong>One frame. Nothing is animating, and that is correct.</strong>
-          The whole payload — {bytes(manifest?.totalBytes ?? 0)} — fits in a single frame at this
-          layer, so there is nothing to loop. A still image is far easier for a camera to catch
-          than a flicker. Leave it up until the other screen reads COMPLETE ✓{" "}
+          <strong>It fits in one picture. Nothing is racing past.</strong>
+          The whole thing — {bytes(manifest?.totalBytes ?? 0)} — fits in a single picture, so the
+          screen holds each one for a moment instead of flickering, and the blocks are as large as
+          they can be. Any camera can catch this. Watch the receiving device — this side cannot
+          see progress. Leave it up until the other screen reads COMPLETE ✓{" "}
           <span className="mono">{manifest?.displayCode}</span>.
         </div>
       )}
 
       {sending && !fullscreen && !still && (
         <div className="notice" style={{ marginTop: 16 }}>
-          <strong>This is not stuck — it is supposed to run forever.</strong>
-          There is no back-channel (ADR-0005). The sender re-broadcasts an endless stream of
-          distinct coded blocks and has no idea whether anyone is watching. Stop it when the
-          receiving screen reads <span className="mono">COMPLETE ✓ {manifest?.displayCode}</span>.
+          <strong>Watch the receiving device — this side cannot see progress.</strong>
+          Nothing comes back the other way, so this screen genuinely does not know whether anyone
+          is watching or how far along they are. All the real status lives on the receiver. It
+          keeps broadcasting until you stop it; stop it when the receiving screen reads{" "}
+          <span className="mono">COMPLETE ✓ {manifest?.displayCode}</span>.
           {framesPerPass > 0 && (
             <>
               {" "}
-              One full pass is {int(framesPerPass)} frames ≈ {bytes(perFrame)} per frame, so at{" "}
-              {stat.fps || 30} fps a clean receiver finishes a pass in{" "}
-              {duration(framesPerPass / Math.max(1, stat.fps || 30))} —{" "}
-              {rate((stat.fps || 30) * perFrame)}. A bad camera needs more passes; it still
-              finishes (ADR-0011).
+              One full pass through the file is {int(framesPerPass)} pictures ({bytes(perFrame)}{" "}
+              each), so at {stat.fps || 30} per second a receiver that catches everything is done
+              in {duration(framesPerPass / Math.max(1, stat.fps || 30))} —{" "}
+              {rate((stat.fps || 30) * perFrame)}. A poorer camera just needs more passes.
             </>
           )}
         </div>

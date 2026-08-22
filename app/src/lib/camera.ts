@@ -106,3 +106,51 @@ export async function lockAutomatics(track: MediaStreamTrack): Promise<LockRepor
   }
   return report;
 }
+
+/* ------------------------------------------------------- screen capture --- */
+
+/**
+ * The other way in: capture a screen or a window instead of pointing a lens at
+ * one.
+ *
+ * This is for the case where the two machines are already connected by a remote
+ * desktop session — the air-gapped box is on screen inside a VNC/RDP window, and
+ * the file crosses as PIXELS through that video channel. It never becomes a file
+ * transfer, so the gap holds; it is the same optical link with the air replaced
+ * by a video codec.
+ *
+ * Two consequences, both good:
+ *  - the grab is pixel-perfect, so there is no lens, no perspective and no
+ *    lighting to correct for, and the decoder can skip finding the grid;
+ *  - there are no automatics to lock, so none of the camera dance applies.
+ *
+ * The browser shows a "you are sharing your screen" indicator that cannot be
+ * suppressed, and typically caps around 30 FPS. Both are fine.
+ */
+export function screenCaptureSupported(): boolean {
+  return typeof navigator.mediaDevices?.getDisplayMedia === "function";
+}
+
+export async function openScreen(): Promise<MediaStream> {
+  return navigator.mediaDevices.getDisplayMedia({
+    video: { frameRate: { ideal: 30 } },
+    audio: false,
+  });
+}
+
+/** What the user actually picked, for the "capturing X" state. */
+export function screenLabel(stream: MediaStream): string {
+  const track = stream.getVideoTracks()[0];
+  if (!track) return "a window";
+  const s = (track.getSettings?.() ?? {}) as { displaySurface?: string; width?: number; height?: number };
+  const surface =
+    s.displaySurface === "monitor"
+      ? "a whole screen"
+      : s.displaySurface === "window"
+        ? "a window"
+        : s.displaySurface === "browser"
+          ? "a browser tab"
+          : track.label || "a window";
+  const size = s.width && s.height ? ` at ${s.width}x${s.height}` : "";
+  return `${surface}${size}`;
+}

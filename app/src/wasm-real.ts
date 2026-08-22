@@ -22,11 +22,19 @@
  *    `frameCapacity(profile, w, h)`, `manifestBytes()`, `verifyChunk()`,
  *    `stats()`, and the `bench*` hooks.
  *
- * NOTE ON THE IMPORT. The bundle is loaded through a dynamic import with a
- * non-literal specifier, so this file typechecks and builds on a checkout that
- * has no wasm build at all. For a PRODUCTION build, change it to a static
- * `import init, { OpticalSender, OpticalReceiver } from "./wasm/optical_wasm.js"`
- * so Vite fingerprints and emits the .wasm asset alongside the bundle.
+ * NOTE ON THE IMPORT. This is a STATIC import, and it has to be.
+ *
+ * It was briefly a dynamic import with a non-literal specifier, so that the
+ * repo would typecheck on a checkout with no wasm build. That worked in dev and
+ * silently broke the production bundle: Vite cannot see through a non-literal
+ * specifier, so it never emitted the glue at that path, and the DECODE WORKER —
+ * a separate chunk — 404'd on it at runtime. The page still loaded, the badge
+ * still said "wasm core", and nothing decoded. The e2e suite caught it; a human
+ * would have called it "the app is broken".
+ *
+ * The cost of a static import is that `src/wasm/` must exist to build. That is
+ * normal for a wasm project, and `tsconfig.json` excludes this file so a
+ * checkout using the mock still typechecks without the bundle.
  */
 import type {
   Manifest,
@@ -129,6 +137,7 @@ interface WasmReceiverLike {
   takeChunk(): unknown;
   isComplete(): boolean;
   free(): void;
+  setGeometry(on: boolean): void;
 }
 
 function wrapReceiver(r: WasmReceiverLike): OpticalReceiver {
@@ -142,6 +151,8 @@ function wrapReceiver(r: WasmReceiverLike): OpticalReceiver {
     takeChunk: () => (r.takeChunk() as unknown as TakenChunk) ?? null,
     isComplete: () => r.isComplete(),
     free: () => r.free(),
+    // Test hook in the bundle, load-bearing here — see wasm-api.ts.
+    setGeometry: (on: boolean) => r.setGeometry(on),
   };
 }
 
@@ -165,6 +176,7 @@ const realModule: OpticalModule = {
   OpticalSender: senderCtor,
   OpticalReceiver: receiverCtor,
   implementation: "wasm",
+  frameCapacity: (profile, width, height) => mod().frameCapacity(profile, width, height),
 };
 
 export default realModule;

@@ -25,6 +25,9 @@ let opfsName = "";
 let outName = "download.bin";
 let capW = 0;
 let capH = 0;
+/** false when the caller says the frames are already aligned (screen capture) */
+let wantGeometry = true;
+let geometryFellBack = false;
 
 const stats: DecodeStats = {
   framesSeen: 0,
@@ -44,6 +47,8 @@ const stats: DecodeStats = {
   elapsedSec: 0,
   complete: false,
   lastReason: null,
+  geometryOn: true,
+  geometrySkipSupported: false,
 };
 
 /** The worker is its own module instance: it must initialise wasm itself. */
@@ -57,6 +62,25 @@ const reasonCounts: Record<string, number> = {};
 
 function post(msg: FromWorker, transfer: Transferable[] = []) {
   self.postMessage(msg, transfer);
+}
+
+/**
+ * Tell the decoder whether it still has to find the grid.
+ *
+ * A camera frame needs the full fiducial + homography path. A screen capture
+ * does not: the pixels are the pixels. If the core cannot be told, we keep the
+ * geometry path and record that the saving did NOT happen, so the UI can say
+ * so instead of claiming an optimisation it did not get.
+ */
+function applyGeometry(r: OpticalReceiver) {
+  const supported = typeof r.setGeometry === "function";
+  stats.geometrySkipSupported = supported;
+  if (supported) {
+    r.setGeometry?.(wantGeometry);
+    stats.geometryOn = wantGeometry;
+  } else {
+    stats.geometryOn = true;
+  }
 }
 
 let opfsOpening: Promise<void> | null = null;
@@ -127,6 +151,20 @@ function maybePostStats(force = false) {
  * a real amount of time and not one has decoded, say so with something the
  * human can act on. We keep trying — we just stop pretending it is working.
  */
+/**
+ * Geometry was skipped on the promise that the frames are aligned. If nothing
+ * decodes, that promise was wrong — a windowed or scaled screen share, most
+ * likely. Turn geometry back on rather than fail, and tell the user why.
+ */
+function checkGeometryFallback() {
+  if (geometryFellBack || wantGeometry || stats.accepted > 0 || !rx) return;
+  if (stats.framesSeen < 25) return;
+  geometryFellBack = true;
+  wantGeometry = true;
+  applyGeometry(rx);
+  post({ type: "geometry-fallback", framesTried: stats.framesSeen });
+}
+
 function checkNoSignal() {
   if (noSignalReported || stats.accepted > 0) return;
   const seconds = (performance.now() - startedAt) / 1000;
@@ -147,6 +185,7 @@ async function handleFrame(bitmap: ImageBitmap) {
       capW = bitmap.width;
       capH = bitmap.height;
       rx = optical.OpticalReceiver.create({ width: capW, height: capH });
+      applyGeometry(rx);
       canvas = new OffscreenCanvas(capW, capH);
       ctx = canvas.getContext("2d", { willReadFrequently: true });
       startedAt = performance.now();
@@ -160,6 +199,7 @@ async function handleFrame(bitmap: ImageBitmap) {
       ctx = canvas.getContext("2d", { willReadFrequently: true });
       const old = rx;
       rx = optical.OpticalReceiver.create({ width: capW, height: capH });
+      applyGeometry(rx);
       old.free();
       if (!ctx) return;
     }
@@ -206,6 +246,7 @@ async function handleFrame(bitmap: ImageBitmap) {
       }
     }
 
+    checkGeometryFallback();
     checkNoSignal();
 
     if (rx.isComplete() && !stats.complete) {
@@ -248,6 +289,8 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
   switch (msg.type) {
     case "init":
       outName = msg.fileName || outName;
+      wantGeometry = msg.geometry;
+      geometryFellBack = false;
       await opticalReady;
       await purgeStale();
       post({ type: "ready" });

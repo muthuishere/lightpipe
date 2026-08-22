@@ -4,7 +4,10 @@
  * No DOM, no camera, no wasm. This is what proves the mock is a real channel
  * and not a stub that returns the answer it was given.
  */
-import optical from "../src/optical";
+// Imports the MOCK directly, not `optical.ts`. This harness runs in Node with
+// no DOM and no wasm, so it must not follow whichever engine the app is
+// currently wired to — it exists to prove the test double is a real channel.
+import optical from "../src/wasm-mock";
 
 function assert(cond: unknown, msg: string) {
   if (!cond) {

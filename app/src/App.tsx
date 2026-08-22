@@ -28,10 +28,10 @@ export default function App() {
         <div className="notice warn" style={{ marginTop: 14 }}>
           <strong>Running against the test double, not the real core.</strong>
           <span className="small">
-            The mock is a real optical channel — P8 cell grid, CRC-guarded frames, out-of-order
-            reassembly — but it has no RaptorQ (a round-robin repeater instead), no fiducial
-            detection or homography, no gzip and no BLAKE3. Throughput and frame counts shown here
-            are the mock's, not the measured numbers in <span className="mono">docs/spikes/LOG.md</span>.
+            A stand-in engine is loaded instead of the real one. It is a genuine optical link —
+            real colour grid, checksummed frames, out-of-order reassembly — but it uses simpler
+            error coding and skips the alignment maths. Speeds and frame counts shown here are
+            its own, not the project's measured figures.
           </span>
         </div>
       )}
@@ -54,8 +54,9 @@ export default function App() {
           <span className="small">
             Pick a file and start sending, then start receiving with source{" "}
             <span className="mono">Simulated loopback</span>. The receiver reads the sender's own
-            canvas through a downscale-and-defocus stage, so the whole path — frames, erasures,
-            chunk completion, OPFS writes, the final code comparison — runs for real.
+            canvas through a shrink-and-blur stage that imitates a camera, so the whole path —
+            frames, unreadable frames, pieces completing, writing to disk, the final code
+            comparison — runs for real.
           </span>
         </div>
       )}
@@ -74,11 +75,10 @@ export default function App() {
       </div>
 
       <footer className="foot">
-        No network, no Bluetooth, no NFC, no pairing, no cable — at any point. The sender never
-        learns whether anyone is watching (ADR-0005), so it broadcasts forever and a human stops
-        it. Frames that fail to decode are erasures, not errors (ADR-0004). A bad camera finishes
-        slowly; it still finishes (ADR-0011) — the measured floor is a hand-held potato webcam at
-        1,182 B/frame, 17.7 KB/s at 15 FPS.
+        No network, no Bluetooth, no NFC, no pairing, no cable — at any point. The sending screen
+        never learns whether anyone is watching, so it broadcasts until a person stops it. Frames
+        that cannot be read cost nothing; the picture repeats. A poor camera finishes slowly but
+        it does finish — the measured floor is a weak hand-held webcam at 17.7 KB/s.
       </footer>
     </div>
   );
