@@ -39,6 +39,16 @@ import type {
   TakenChunk,
 } from "./wasm-api";
 
+// Static import so Vite fingerprints the .wasm and rewrites its URL for the
+// deployed base path. A dynamic non-literal specifier keeps the repo building
+// without the bundle, but Vite then cannot see the asset and the deploy 404s.
+// The bundle is a build artifact: run `task wasm:build` before `npm run build`.
+import initWasm, {
+  OpticalSender as WasmSender,
+  OpticalReceiver as WasmReceiver,
+  frameCapacity as wasmFrameCapacity,
+} from "./wasm/optical_wasm.js";
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type AnyModule = {
   default: (...a: unknown[]) => Promise<{ memory: WebAssembly.Memory }>;
@@ -47,7 +57,6 @@ type AnyModule = {
   frameCapacity(profile: string, width: number, height: number): number;
 };
 
-const BUNDLE = "./wasm/optical_wasm.js";
 let bundle: AnyModule | null = null;
 let mem: WebAssembly.Memory | null = null;
 
@@ -143,9 +152,14 @@ export function payloadPerFrame(profile: string, width: number, height: number):
 
 const realModule: OpticalModule = {
   init: async () => {
-    bundle = (await import(/* @vite-ignore */ BUNDLE)) as AnyModule;
-    const out = await bundle.default();
-    mem = out.memory;
+    bundle = {
+      default: initWasm as AnyModule["default"],
+      OpticalSender: WasmSender as unknown as AnyModule["OpticalSender"],
+      OpticalReceiver: WasmReceiver as unknown as AnyModule["OpticalReceiver"],
+      frameCapacity: wasmFrameCapacity as AnyModule["frameCapacity"],
+    };
+    const out = await initWasm();
+    mem = (out as unknown as { memory: WebAssembly.Memory }).memory;
   },
   memory: memoryFacade,
   OpticalSender: senderCtor,

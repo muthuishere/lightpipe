@@ -96,9 +96,16 @@ tasks:
       - node harness/run.mjs
 
   app:dev:
-    desc: 'S8: run the React app'
+    desc: 'S8: run the React app (builds the wasm bundle first)'
+    deps: [wasm:build]
     cmds:
       - cd app && npm run dev
+
+  app:build:
+    desc: 'Production build of the app, exactly as GitHub Pages builds it'
+    deps: [wasm:build]
+    cmds:
+      - cd app && npm ci && BASE_PATH=/transfer-qr/ npm run build
 
   adr:
     desc: List architecture decisions
