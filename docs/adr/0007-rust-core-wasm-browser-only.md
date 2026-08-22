@@ -22,6 +22,21 @@ and loaded by a React app.
 - The hot path bypasses wasm-bindgen and shares linear memory directly, so camera
   frames are written into WASM with zero copies.
 
+## Measured (S7, 2026-08-22)
+- **Bundle: 219.3 KB gzipped** (414 KB raw) at `opt-level=3` + `wasm-opt`. The
+  200–400 KB prediction holds, at the bottom of the band.
+- **The `opt-level="z"` mitigation stated above is withdrawn.** It buys 18.6 KB
+  gzipped (8.5%) and costs 1.2× on decode, 1.9× on frame render, and **2.1× on the
+  geometry path** — 76.5 → 161.5 ms/frame, i.e. it doubles the cost of the one path
+  that is already the bottleneck (ADR-0015). Ship `opt-level=3`. Revisit only if
+  bundle size ever matters more than frame rate.
+- **The anti-Go argument is now grounded rather than asserted.** Our JS↔WASM boundary
+  costs **0.90 µs/frame** — 0.16% of one frame's decode — and serialises **0 bytes**.
+  Zero-copy verified, not assumed: 500 frames grow linear memory by 0 bytes, where a
+  copying boundary would have moved 4.0 GiB.
+- Aligned decode is **0.55 ms/frame = 1,816 FPS**; sender render 3.36 ms = 297 FPS.
+  WASM is nowhere near the constraint.
+
 ## Alternatives rejected
 - **Go** — ~2 MB minimum WASM (GC + runtime ships with you), `syscall/js` allocates
   on every boundary crossing (fatal at 1080p × 30 FPS), GC pauses inside a realtime

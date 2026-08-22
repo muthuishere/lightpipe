@@ -16,6 +16,13 @@ Compression happens once, up front — never inside the frame loop. If the first
 chunk's compression ratio is worse than ~0.95 (mp4, jpg, zip), the whole transfer
 switches to raw and sets a flag.
 
+## Superseded in part (ADR-0014, 2026-08-22)
+The compressibility probe described above is **withdrawn**. The e2e integration
+measured the compressor at 79.7 MB/s against a 17.6–131 KB/s channel — 600×–4,500×
+headroom — so compression was never on the critical path and the probe optimised
+nothing. Always chunk, always gzip. See [ADR-0014](0014-always-compress.md).
+The chunking decision itself stands unchanged.
+
 ## Consequences
 - Each chunk completes and is written to disk on its own: real progress, bounded
   memory, and a 4 GB file never touches the heap.
