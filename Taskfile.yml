@@ -1,0 +1,66 @@
+version: '3'
+
+vars:
+  ARTIFACTS: artifacts
+
+tasks:
+  default:
+    desc: Show the spike ladder and its status
+    cmds:
+      - grep -E '^## S[0-9]|STATUS:' docs/spikes/PLAN.md | sed 's/\*\*//g'
+
+  test:
+    desc: Run every automated test (no hardware, no browser)
+    cmds:
+      - cargo test --workspace
+
+  build:
+    desc: Build the core crate
+    cmds:
+      - cargo build --workspace
+
+  fmt:
+    desc: Format
+    cmds:
+      - cargo fmt --all
+
+  lint:
+    desc: Clippy, warnings are errors
+    cmds:
+      - cargo clippy --workspace --all-targets -- -D warnings
+
+  ci:
+    desc: What CI runs
+    cmds:
+      - task: fmt
+      - task: lint
+      - task: test
+
+  clean:artifacts:
+    desc: Wipe generated artifacts
+    cmds:
+      - rm -rf {{.ARTIFACTS}} && mkdir -p {{.ARTIFACTS}}
+
+  # ---- spikes: each is runnable by any human and leaves something to look at ----
+
+  spike:0:
+    desc: 'S0 palette + cell round-trip on a perfect channel -> artifacts/s0-frame.png'
+    cmds:
+      - mkdir -p {{.ARTIFACTS}}
+      - cargo run --release --bin spike0
+
+  spike:1:
+    desc: 'S1 degraded-channel sweep (incl. potato camera) -> artifacts/s1-sweep.csv'
+    cmds:
+      - mkdir -p {{.ARTIFACTS}}
+      - cargo run --release --bin spike1
+
+  adr:
+    desc: List architecture decisions
+    cmds:
+      - cat docs/adr/README.md
+
+  spec:
+    desc: OpenSpec dashboard
+    cmds:
+      - openspec list

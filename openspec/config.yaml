@@ -1,0 +1,31 @@
+schema: spec-driven
+
+context: |
+  transfer-qr — air-gapped optical file transfer.
+
+  A file is transmitted as an animated grid of coloured cells on one device's
+  screen and read by another device's camera. No network, no Bluetooth, no
+  pairing, no cable. Not QR: a custom cell grid tuned for the screen->camera
+  channel.
+
+  Stack:
+    - Rust core (crates/core) — pure, no I/O, no DOM. bytes -> Vec<RgbImage>
+      and Vec<RgbImage> -> bytes. Compiles native (tests) and wasm32 (browser).
+    - Channel simulator lives in the core crate and stands in for
+      "screen -> air -> webcam" so every layer is testable with no hardware.
+    - React + WASM front end. Browser-only; no native app, no server.
+
+  Conventions:
+    - Taskfile v3 (`task test`, `task spike:N`). Never bare cargo in docs.
+    - Every decision that closes an option gets an ADR in docs/adr/.
+    - Spike-first: nothing is built before a spike proves it, and every spike
+      is runnable by a human via `task spike:N` with a visual artifact.
+    - No secrets anywhere. No network calls in core.
+
+rules:
+  proposal:
+    - State the throughput or robustness number the change is chasing.
+    - Always include a "Non-goals" section.
+  tasks:
+    - Every task must name how it is verified (test name, or artifact to eyeball).
+    - No task may depend on physical hardware before spike S6.

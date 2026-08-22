@@ -1,0 +1,16 @@
+[package]
+name = "optical-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crc32fast = "1"
+png = "0.17"
+
+[[bin]]
+name = "spike0"
+path = "src/bin/spike0.rs"
+
+[[bin]]
+name = "spike1"
+path = "src/bin/spike1.rs"
