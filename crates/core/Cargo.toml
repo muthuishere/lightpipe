@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 crc32fast = "1"
 png = "0.17"
+raptorq = "2"
+blake3 = "1"
+flate2 = "1"
 
 [[bin]]
 name = "spike0"
@@ -14,3 +17,19 @@ path = "src/bin/spike0.rs"
 [[bin]]
 name = "spike1"
 path = "src/bin/spike1.rs"
+
+[[bin]]
+name = "spike2"
+path = "src/bin/spike2.rs"
+
+[[bin]]
+name = "spike3"
+path = "src/bin/spike3.rs"
+
+[[bin]]
+name = "spike4"
+path = "src/bin/spike4.rs"
+
+[[bin]]
+name = "spike5"
+path = "src/bin/spike5.rs"

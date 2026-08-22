@@ -5,10 +5,14 @@
 //! testable against the channel simulator with no hardware.
 
 pub mod codec;
+pub mod fountain;
 pub mod frame;
+pub mod geometry;
+pub mod header;
 pub mod image;
 pub mod modem;
 pub mod palette;
+pub mod pipeline;
 pub mod sim;
 
 pub use frame::FrameSpec;

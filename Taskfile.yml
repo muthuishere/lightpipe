@@ -55,6 +55,30 @@ tasks:
       - mkdir -p {{.ARTIFACTS}}
       - cargo run --release --bin spike1
 
+  spike:2:
+    desc: 'S2 frame header + CRC, false-accept rate -> artifacts/s2-integrity.txt'
+    cmds:
+      - mkdir -p {{.ARTIFACTS}}
+      - cargo run --release --bin spike2
+
+  spike:3:
+    desc: 'S3 fountain across frames under loss -> artifacts/s3-overhead.csv'
+    cmds:
+      - mkdir -p {{.ARTIFACTS}}
+      - cargo run --release --bin spike3
+
+  spike:4:
+    desc: 'S4 geometry: fiducials + homography under warp -> artifacts/s4-warped.png'
+    cmds:
+      - mkdir -p {{.ARTIFACTS}}
+      - cargo run --release --bin spike4
+
+  spike:5:
+    desc: 'S5 chunked gzip pipeline, resume + BLAKE3 -> artifacts/s5-pipeline.txt'
+    cmds:
+      - mkdir -p {{.ARTIFACTS}}
+      - cargo run --release --bin spike5
+
   adr:
     desc: List architecture decisions
     cmds:
