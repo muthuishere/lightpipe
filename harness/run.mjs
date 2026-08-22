@@ -477,6 +477,76 @@ section("8. throughput at 1920x1080 (the number S8 needs)");
 }
 
 // ---------------------------------------------------------------------------
+section("9. ADR-0012: one shared symbol size, dense frames, every profile decodes");
+// ---------------------------------------------------------------------------
+// The sender packs floor(capacity / packet_size) whole fountain packets into each
+// frame at ONE symbol size shared across the whole ladder (the coarse rung's), and
+// the receiver splits the payload back into packets symmetrically. This section
+// proves (a) a data frame is packed near full — not the mostly-black strip the
+// per-packet-per-frame framing produced — and (b) every rung completes a round trip.
+{
+  // The rendered grid geometry, replicated from optical-core's geometry::frame_spec:
+  // a fiducial-wide margin (marker + 2*quiet), NOT FrameSpec::new's margin=cell.
+  const CELL = { L0: 20, L1: 14, L2: 10, L3: 8, L4: 6, auto: 8 };
+  const grid = (w, h, cell) => {
+    const marker = Math.min(96, Math.max(72, 8 * cell)); // marker_size clamp
+    const margin = marker + 2 * Math.floor(marker / 6);  // + 2*quiet_zone
+    return { margin, cols: Math.floor((w - 2 * margin) / cell), rows: Math.floor((h - 2 * margin) / cell) };
+  };
+  // Fraction of grid cells that render as a non-black (data-bearing) colour. P8 uses
+  // black as a legitimate symbol, so a fully packed random frame tops out near ~85%.
+  const cellFill = (px, w, h, cell) => {
+    const g = grid(w, h, cell);
+    let lit = 0, tot = 0;
+    for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) {
+      const x = g.margin + c * cell + (cell >> 1), y = g.margin + r * cell + (cell >> 1);
+      const i = (y * w + x) * 4; tot++; if (px[i] | px[i + 1] | px[i + 2]) lit++;
+    }
+    return 100 * lit / tot;
+  };
+
+  // Incompressible payload (an mp4/jpg/zip stand-in, e2e's blob_corpus case): the
+  // honest dense-frame test. A coarse rung packs one packet, so its fill reflects the
+  // packet's own entropy; only high-entropy bytes exercise the true capacity.
+  const blob = (n, seed) => {
+    let x = BigInt.asUintN(64, BigInt(seed) || 1n);
+    const o = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      x ^= BigInt.asUintN(64, x << 13n); x ^= x >> 7n; x ^= BigInt.asUintN(64, x << 17n);
+      o[i] = Number((x >> 33n) & 0xffn);
+    }
+    return o;
+  };
+
+  const w = 1920, h = 1080;
+  const pkt = frameCapacity("L0", w, h); // the one shared packet size
+  note(`shared fountain packet size (coarse rung L0): ${pkt} B — one size for the whole ladder (ADR-0012)`);
+  const data = blob(600_000, 41);
+
+  for (const prof of ["L0", "L1", "L2", "L3", "L4", "auto"]) {
+    const cap = frameCapacity(prof, w, h);
+    const perFrame = Math.max(1, Math.floor(cap / pkt));
+    // A data frame: skip past the manifest burst so we sample a chunk-carrying frame.
+    const tx = OpticalSender.create(data, { profile: prof, width: w, height: h });
+    for (let i = 0; i < 40; i++) tx.nextFrame();
+    const f = tx.nextFrame();
+    const fill = cellFill(view(f.ptr, f.len), w, h, CELL[prof]);
+    const capFill = 100 * perFrame * pkt / cap;
+    tx.free();
+
+    check(`${prof}: data frame is densely packed (>70% lit cells), not a mostly-black strip`,
+      fill > 70, `${fill.toFixed(1)}% lit cells, ${perFrame} packets/frame, ${capFill.toFixed(1)}% of capacity carries packets`);
+
+    const r = transfer({ data, w, h, profile: prof });
+    check(`${prof}: byte-identical round trip on the ideal channel`,
+      r.rx.isComplete() && Buffer.compare(Buffer.from(r.out), Buffer.from(data)) === 0,
+      `${r.frames} frames, ${r.completed}/${r.m.chunkCount} chunks`);
+    eq(`${prof}: neededMore() reaches 0`, r.rx.neededMore(), 0);
+    eq(`${prof}: display codes match`, r.rx.displayCode(), r.m.displayCode);
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log(`\n${failures.length === 0 ? "PASS" : "FAIL"}  ${pass} checks passed, ${failures.length} failed`);
 if (failures.length) {
   for (const f of failures) console.log(`  - ${f}`);

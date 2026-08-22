@@ -41,11 +41,20 @@ pub const MANIFEST_SEQ: u32 = u32::MAX;
 /// After the opening burst, one frame in this many re-broadcasts the manifest, so a
 /// receiver that joins late still learns the transfer without a back-channel (ADR-0005).
 pub const MANIFEST_EVERY: u64 = 24;
-/// Frames spent on a chunk before moving on: K plus 25% plus a floor. There is no
+/// Packets spent on a chunk before moving on: K plus 25% plus a floor. There is no
 /// back-channel, so this is an open-loop guess; the fountain makes an over- or
 /// under-shoot cost time, never correctness (ADR-0004).
 fn budget_for(k: usize) -> u64 {
     (k + k / 4 + 4) as u64
+}
+
+/// The whole ladder shares ONE fountain symbol size — the coarse rung's (ADR-0012),
+/// so that every packet, on any rung, belongs to the same source block and a dense
+/// frame simply carries several of them. The coarse rung is `Profile::L0` (the
+/// largest cell, hence the smallest frame capacity), so its capacity is the packet
+/// size no finer rung can undercut: at any profile `capacity / packet_size >= 1`.
+pub fn shared_packet_size(width: usize, height: usize) -> usize {
+    geometry::frame_spec(width, height, Profile::L0.cell()).capacity_bytes(&P8)
 }
 
 // ---------------------------------------------------------------------------
@@ -216,16 +225,20 @@ pub struct FrameRef {
 pub struct Sender {
     enc: Encoder<Owned>,
     manifest: Manifest,
-    manifest_bytes: Vec<u8>,
     profile: Profile,
     spec: FrameSpec,
     pal: &'static Palette,
+    /// The one shared fountain symbol size + FEC id, in bytes, for the whole ladder
+    /// (ADR-0012). Every packet is exactly this long; a dense frame packs several.
+    packet_size: usize,
 
     manifest_tx: fountain::Transmitter,
+    /// Manifest frames burst up front (counted in frames, not packets).
     manifest_burst: u64,
 
     chunk: usize,
     chunk_tx: Option<fountain::Transmitter>,
+    /// Remaining packet budget for the chunk in flight (ADR-0004 open-loop guess).
     chunk_left: u64,
 
     frames: u64,
@@ -261,18 +274,25 @@ impl Sender {
         if header::header_copies(&spec, pal) == 0 {
             return None;
         }
+        // One symbol size for the whole ladder (ADR-0012). It is the coarse rung's,
+        // so `capacity >= packet_size` at every profile and a frame packs
+        // `capacity / packet_size` whole packets.
+        let packet_size = shared_packet_size(width, height);
+        if packet_size <= fountain::PACKET_HEADER_BYTES || capacity < packet_size {
+            return None;
+        }
         let enc = Encoder::build(Owned(bytes), Config::default().with_chunk_size(chunk_size));
         let manifest = enc.manifest().clone();
         let manifest_bytes = encode_manifest(&manifest);
-        let manifest_tx = fountain::Transmitter::new(&manifest_bytes, capacity).ok()?;
+        let manifest_tx = fountain::Transmitter::new(&manifest_bytes, packet_size).ok()?;
         let burst = budget_for(manifest_tx.source_symbols());
         let mut s = Self {
             enc,
             manifest,
-            manifest_bytes,
             profile,
             spec,
             pal,
+            packet_size,
             manifest_tx,
             manifest_burst: burst,
             chunk: 0,
@@ -292,6 +312,12 @@ impl Sender {
         self.spec.capacity_bytes(self.pal)
     }
 
+    /// Whole packets one frame carries at the current profile (ADR-0012). Always
+    /// >= 1 because `packet_size` is the coarse rung's capacity.
+    fn packets_per_frame(&self) -> usize {
+        (self.capacity() / self.packet_size).max(1)
+    }
+
     fn arm_chunk(&mut self, index: usize) -> Option<()> {
         let n = self.manifest.chunk_count as usize;
         if n == 0 {
@@ -299,7 +325,7 @@ impl Sender {
         }
         let index = index % n;
         let payload = self.enc.chunk_payload(index).ok()?;
-        let tx = fountain::Transmitter::new(&payload, self.capacity()).ok()?;
+        let tx = fountain::Transmitter::new(&payload, self.packet_size).ok()?;
         self.chunk_left = budget_for(tx.source_symbols());
         self.chunk = index;
         self.chunk_tx = Some(tx);
@@ -315,6 +341,7 @@ impl Sender {
         let cap = spec.capacity_bytes(pal);
         if cap <= fountain::PACKET_HEADER_BYTES
             || cap > u16::MAX as usize
+            || cap < self.packet_size
             || header::header_copies(&spec, pal) == 0
         {
             return false;
@@ -324,14 +351,10 @@ impl Sender {
         self.pal = pal;
         self.stamped = false;
         self.img.data.fill(0);
-        // Capacity changed, so every fountain must be rebuilt at the new symbol size.
-        let Ok(mtx) = fountain::Transmitter::new(&self.manifest_bytes, cap) else {
-            return false;
-        };
-        self.manifest_burst = budget_for(mtx.source_symbols());
-        self.manifest_tx = mtx;
-        let c = self.chunk;
-        self.arm_chunk(c).is_some()
+        // Under one shared symbol size (ADR-0012) the fountains are unchanged by a
+        // profile switch: only the geometry — and hence how many packets a frame
+        // packs — changes. The in-flight streams continue uninterrupted.
+        true
     }
 
     pub fn manifest(&self) -> &Manifest {
@@ -362,21 +385,32 @@ impl Sender {
         let manifest_frame =
             self.frames < self.manifest_burst || self.frames % MANIFEST_EVERY == MANIFEST_EVERY - 1;
 
-        let (seq, packet) = if manifest_frame {
-            (MANIFEST_SEQ, self.manifest_tx.next_packet())
+        // A dense frame carries several whole packets at the one shared symbol size
+        // (ADR-0012). Every packet in the buffer belongs to the same source block,
+        // so the receiver simply splits the payload back into `packet_size` pieces.
+        let per_frame = self.packets_per_frame();
+
+        let (seq, oti, packet) = if manifest_frame {
+            let mut buf = Vec::with_capacity(per_frame * self.packet_size);
+            for _ in 0..per_frame {
+                buf.extend_from_slice(&self.manifest_tx.next_packet());
+            }
+            (MANIFEST_SEQ, self.manifest_tx.oti(), buf)
         } else {
             if self.chunk_left == 0 {
                 let next = self.chunk + 1;
                 self.arm_chunk(next)?;
             }
-            self.chunk_left -= 1;
-            let tx = self.chunk_tx.as_mut()?;
-            (self.chunk as u32, tx.next_packet())
-        };
-        let oti = if manifest_frame {
-            self.manifest_tx.oti()
-        } else {
-            self.chunk_tx.as_ref()?.oti()
+            let (oti, buf) = {
+                let tx = self.chunk_tx.as_mut()?;
+                let mut buf = Vec::with_capacity(per_frame * self.packet_size);
+                for _ in 0..per_frame {
+                    buf.extend_from_slice(&tx.next_packet());
+                }
+                (tx.oti(), buf)
+            };
+            self.chunk_left = self.chunk_left.saturating_sub(per_frame as u64);
+            (self.chunk as u32, oti, buf)
         };
 
         let h = FrameHeader::new(seq, packet.len() as u16, oti);
@@ -576,6 +610,9 @@ pub struct Receiver {
     spec: FrameSpec,
     pal: &'static Palette,
     profile: Profile,
+    /// The one shared fountain packet size (ADR-0012). A frame's payload is a
+    /// concatenation of whole packets of this length; the receiver splits it back.
+    packet_size: usize,
     /// The camera's landing pad. JS writes straight into this — it is the buffer
     /// `frame_buffer()` hands out, and it is never reallocated.
     frame: Vec<u8>,
@@ -611,6 +648,7 @@ impl Receiver {
             spec,
             pal,
             profile,
+            packet_size: shared_packet_size(width, height),
             frame: vec![0u8; width * height * 4],
             rgb: RgbImage::new(width, height),
             hdr_syms: Vec::new(),
@@ -859,7 +897,11 @@ impl Receiver {
                 }
             }
             let fx = self.manifest_fx.as_mut().unwrap();
-            let fresh = fx.push(&df.payload);
+            // The frame packs several whole packets (ADR-0012); feed each one.
+            let mut fresh = false;
+            for pkt in df.payload.chunks(self.packet_size) {
+                fresh |= fx.push(pkt);
+            }
             let finished = fx.finish();
             if let Some(bytes) = finished {
                 if let Some(m) = decode_manifest(&bytes) {
@@ -909,7 +951,12 @@ impl Receiver {
                 }
             },
         };
-        let fresh = entry.push(&df.payload);
+        // The frame packs several whole packets at the shared symbol size
+        // (ADR-0012); split the payload back and feed each into the one decoder.
+        let mut fresh = false;
+        for pkt in df.payload.chunks(self.packet_size) {
+            fresh |= entry.push(pkt);
+        }
         let finished = if entry.is_complete() {
             entry.finish()
         } else {
