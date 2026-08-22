@@ -40,7 +40,7 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      testMatch: /app\.spec\.ts/,
+      testMatch: /(app|screenshare)\.spec\.ts/,
       use: {
         ...devices["Desktop Chrome"],
         permissions: ["camera"],

@@ -10,6 +10,13 @@ export type ToWorker =
        * so the decoder may skip fiducial detection and the homography.
        */
       geometry: boolean;
+      /**
+       * ADR-0017 preflight. Measure the link and report per-check verdicts;
+       * write nothing to disk and keep no state between runs.
+       */
+      doctor?: boolean;
+      /** quality settings this engine can actually use, for the recommendation */
+      profiles?: string[];
     }
   | { type: "frame"; bitmap: ImageBitmap }
   | { type: "stop" }
@@ -47,6 +54,27 @@ export interface DecodeStats {
   geometrySkipSupported: boolean;
 }
 
+/** One named check from the ADR-0017 preflight. */
+export interface DoctorCheck {
+  id: "fiducials" | "sharpness" | "fill" | "exposure" | "colour" | "decode";
+  label: string;
+  /** null while there is not enough evidence yet */
+  pass: boolean | null;
+  /** the measured number, already formatted */
+  reading: string;
+  /** what to do about it, only when failing */
+  remedy: string;
+}
+
+export interface DoctorReport {
+  framesSeen: number;
+  checks: DoctorCheck[];
+  verdict: "good" | "workable" | "bad" | "measuring";
+  summary: string;
+  /** profile id recommended by measurement, not by guess */
+  recommend: string | null;
+}
+
 /** worker -> main */
 export type FromWorker =
   | { type: "ready" }
@@ -72,5 +100,6 @@ export type FromWorker =
       type: "geometry-fallback";
       framesTried: number;
     }
+  | { type: "doctor"; report: DoctorReport }
   | { type: "saved"; blob: Blob; fileName: string; size: number }
   | { type: "error"; message: string };

@@ -14,6 +14,7 @@
 import optical from "../optical";
 import type { OpticalReceiver } from "../wasm-api";
 import type { DecodeStats, FromWorker, ToWorker } from "./protocol";
+import { accumulate, buildReport, measureFrame, newDoctorState, type DoctorState } from "./doctor";
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -22,12 +23,16 @@ let canvas: OffscreenCanvas | null = null;
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let handle: FileSystemSyncAccessHandle | null = null;
 let opfsName = "";
+let doctorProfiles: string[] = [];
 let outName = "download.bin";
 let capW = 0;
 let capH = 0;
 /** false when the caller says the frames are already aligned (screen capture) */
 let wantGeometry = true;
 let geometryFellBack = false;
+/** ADR-0017 preflight: measure and report, write nothing. */
+let doctorState: DoctorState | null = null;
+let lastDoctorPost = 0;
 
 const stats: DecodeStats = {
   framesSeen: 0,
@@ -215,8 +220,25 @@ async function handleFrame(bitmap: ImageBitmap) {
     stats.framesSeen++;
     fpsWindow.push(performance.now());
 
+    if (doctorState) {
+      accumulate(doctorState, measureFrame(img.data as unknown as Uint8Array, capW, capH));
+    }
+
     const res = rx.pushFrame();
     stats.quality = res.quality;
+    if (doctorState) {
+      doctorState.pushed++;
+      if (res.accepted) doctorState.accepted++;
+      if (res.reason !== "no_fiducials") doctorState.sawFiducials++;
+      const now = performance.now();
+      if (now - lastDoctorPost > 400) {
+        lastDoctorPost = now;
+        post({ type: "doctor", report: buildReport(doctorState, doctorProfiles) });
+      }
+      // The doctor never writes to disk and never keeps a partial file.
+      post({ type: "ack" });
+      return;
+    }
     if (res.accepted) {
       stats.accepted++;
       stats.lastReason = null;
@@ -289,8 +311,11 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
   switch (msg.type) {
     case "init":
       outName = msg.fileName || outName;
+      doctorProfiles = msg.profiles ?? [];
       wantGeometry = msg.geometry;
       geometryFellBack = false;
+      doctorState = msg.doctor ? newDoctorState() : null;
+      lastDoctorPost = 0;
       await opticalReady;
       await purgeStale();
       post({ type: "ready" });

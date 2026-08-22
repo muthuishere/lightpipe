@@ -57,6 +57,8 @@ export async function waitForOutcome(page: Page, ms = 90_000) {
     if (await page.locator("button", { hasText: /^Save / }).count()) return "complete";
     const text = await page.locator(".app").innerText();
     if (text.includes("Nothing is decoding")) return "no-signal";
+    // Capture mode says the same thing in four words instead of a paragraph.
+    if (/Move closer — fill the frame|Hold steadier — less glare/.test(text)) return "no-signal";
     if (text.includes("Receive failed")) return "failed";
     await page.waitForTimeout(400);
   }

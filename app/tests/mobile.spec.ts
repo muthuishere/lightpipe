@@ -173,3 +173,244 @@ test.describe("fullscreen send on a phone", () => {
     expect(canvasBox!.width).toBeGreaterThan(0);
   });
 });
+
+/**
+ * The second report, also from a real phone: the RECEIVE view needed scrolling
+ * while capturing. "need more" — the only number that matters — was below the
+ * fold, under a camera diagnostic card, a storage line, a five-line error
+ * paragraph, an explanation, a quality bar and an eight-cell stats grid.
+ *
+ * A person aiming a phone at another screen has both hands occupied. Scrolling
+ * is not available to them, so nothing they need may require it — and nothing
+ * they need may be behind a tap either: when a scan is not working, WHY has to
+ * be on screen already. The answer is density, not disclosure.
+ *
+ * These run against Chromium's fake camera: it emits a rolling test pattern
+ * that is not a valid code, which is exactly the state the user was stuck in
+ * and the hardest one to lay out well.
+ */
+test.describe("receive capture mode on a phone", () => {
+  /** Every LIVE value that must be readable without scrolling or tapping. */
+  const LIVE_STATS = [
+    "need",
+    "problem",
+    "quality",
+    "received",
+    "speed",
+    "pieces",
+    "left",
+    "rate",
+    "seen",
+    "unreadable",
+    "repeats",
+  ];
+
+  async function startCapture(page: import("@playwright/test").Page) {
+    await openApp(page);
+    await page.getByRole("tab", { name: "Receive" }).click();
+    await page
+      .locator("select")
+      .filter({ has: page.locator('option[value="loopback"]') })
+      .selectOption("camera");
+    await page.getByRole("button", { name: "Start receiving" }).click();
+    await expect(page.locator(".capture")).toBeVisible();
+    await page.waitForTimeout(1200);
+  }
+
+  async function hud(page: import("@playwright/test").Page) {
+    return page.evaluate((stats: string[]) => {
+      const box = (sel: string) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return {
+          top: r.top,
+          bottom: r.bottom,
+          left: r.left,
+          right: r.right,
+          w: r.width,
+          h: r.height,
+        };
+      };
+      const values: Record<string, { box: ReturnType<typeof box>; text: string } | null> = {};
+      for (const name of stats) {
+        const el = document.querySelector(`[data-stat="${name}"]`);
+        values[name] = el
+          ? { box: box(`[data-stat="${name}"]`), text: (el.textContent || "").trim() }
+          : null;
+      }
+      const need = document.querySelector(".need-value");
+      return {
+        vw: window.innerWidth,
+        vh: window.innerHeight,
+        scrollY: window.scrollY,
+        scrollH: document.documentElement.scrollHeight,
+        values,
+        needText: need ? (need.textContent || "").trim() : null,
+        needLabel: (document.querySelector(".need-label")?.textContent || "").trim(),
+        stop: box(".capture .btn.stop"),
+        sheet: box(".capture .hud-sheet"),
+        video: box(".capture-video"),
+        needFontPx: need ? parseFloat(getComputedStyle(need).fontSize) : 0,
+      };
+    }, LIVE_STATS);
+  }
+
+  test("every live status value and stop are on screen at once, no scroll, no tap", async ({
+    page,
+  }, testInfo) => {
+    await startCapture(page);
+    const m = await hud(page);
+
+    const within = (b: { top: number; bottom: number; left: number; right: number }) =>
+      b.top >= -1 && b.bottom <= m.vh + 1 && b.left >= -1 && b.right <= m.vw + 1;
+
+    // Nothing is behind a disclosure.
+    expect(m.sheet, "the setup sheet must start collapsed").toBeNull();
+
+    const missing: string[] = [];
+    const offscreen: string[] = [];
+    for (const name of LIVE_STATS) {
+      const v = m.values[name];
+      if (!v || !v.box) {
+        missing.push(name);
+        continue;
+      }
+      if (!within(v.box)) offscreen.push(`${name} @${Math.round(v.box.top)}-${Math.round(v.box.bottom)}`);
+    }
+    expect(missing, "live values not rendered at all").toEqual([]);
+    expect(offscreen, `live values outside the ${m.vw}x${m.vh} viewport`).toEqual([]);
+    expect(within(m.stop!), `stop ${JSON.stringify(m.stop)}`).toBe(true);
+
+    // "need more" is still the largest thing on screen.
+    expect(m.needFontPx).toBeGreaterThan(30);
+
+    // And the page genuinely cannot move.
+    await page.mouse.wheel(0, 1400);
+    await page.evaluate(() => window.scrollTo(0, 2500));
+    await page.waitForTimeout(200);
+    const after = await hud(page);
+    expect(after.scrollY, "the page scrolled").toBe(0);
+    expect(after.scrollH).toBeLessThanOrEqual(after.vh + 1);
+
+    const rows = LIVE_STATS.map(
+      (n) => `${n} @${Math.round(m.values[n]!.box!.top)}`,
+    ).join(" · ");
+    testInfo.annotations.push({
+      type: "layout",
+      description:
+        `${m.vw}x${m.vh} · need "${m.needText}" ${Math.round(m.needFontPx)}px · ` +
+        `video ${Math.round(m.video!.w)}x${Math.round(m.video!.h)} · ` +
+        `stop @${Math.round(m.stop!.top)}-${Math.round(m.stop!.bottom)} · ${rows}`,
+    });
+    console.log(`  [${testInfo.project.name}] ${testInfo.annotations.at(-1)!.description}`);
+  });
+
+  test("need-more says nothing rather than a misleading number before a code arrives", async ({
+    page,
+  }) => {
+    await startCapture(page);
+    const m = await hud(page);
+    // The core answers 1 before any header has decoded, which reads as "almost
+    // done" while in fact nothing has been seen. The UI must not repeat that.
+    expect(m.needText).toBe("—");
+    expect(m.needLabel).toBe("looking for a code");
+  });
+
+  test("only static setup is behind the disclosure", async ({ page }) => {
+    await startCapture(page);
+    await page.getByRole("button", { name: "Setup" }).click();
+    const sheet = page.locator(".capture .hud-sheet");
+    await expect(sheet).toBeVisible();
+    // Setup information, not live status.
+    await expect(sheet).toContainText(/Camera settings|Storage/);
+
+    const m = await hud(page);
+    expect(m.sheet!.bottom).toBeLessThanOrEqual(m.vh + 1);
+    expect(m.scrollY).toBe(0);
+
+    await page.getByRole("button", { name: "Hide setup" }).click();
+    await expect(sheet).toHaveCount(0);
+  });
+
+  test("trouble is one short line, and the numbers stay put", async ({ page }) => {
+    await startCapture(page);
+    // The fake camera never decodes, so the loud-failure path fires.
+    await page.waitForTimeout(8000);
+    const line = (await page.locator('[data-stat="problem"]').innerText()).trim();
+    expect(line.length).toBeLessThan(40);
+    expect(line).toMatch(/Move closer|Hold steadier|Sharp|Too soft/);
+
+    const m = await hud(page);
+    for (const name of LIVE_STATS) {
+      const b = m.values[name]!.box!;
+      expect(b.bottom, `${name} fell off the bottom`).toBeLessThanOrEqual(m.vh + 1);
+    }
+    expect(m.stop!.bottom).toBeLessThanOrEqual(m.vh + 1);
+  });
+});
+
+/**
+ * ADR-0017: the preflight doctor. The first real-camera test produced 385
+ * frames seen, 385 unreadable and nothing decoded, with correctly framed
+ * markers — and the only feedback was "Nothing is decoding" plus a paragraph of
+ * guesses. This is the surface that replaces guessing with named measurements.
+ */
+test.describe("preflight doctor", () => {
+  test("names every check with a reading, and stays on one screen", async ({ page }) => {
+    await openApp(page);
+    await page.getByRole("tab", { name: "Receive" }).click();
+    await page.getByRole("button", { name: "Check my setup" }).click();
+    await expect(page.locator(".capture")).toBeVisible();
+    await expect(page.locator("[data-doctor]")).toBeVisible({ timeout: 20_000 });
+
+    // Every ADR-0017 check is present, and each carries a measured reading.
+    for (const id of ["fiducials", "sharpness", "fill", "exposure", "colour", "decode"]) {
+      const row = page.locator(`[data-check="${id}"]`);
+      await expect(row, id).toBeVisible();
+      await expect(row.locator("i"), `${id} reading`).not.toBeEmpty();
+    }
+
+    // A verdict, not a shrug.
+    await expect(page.locator('[data-stat="verdict"]')).not.toBeEmpty();
+
+    const m = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll("[data-check]")].map((el) => {
+        const r = el.getBoundingClientRect();
+        return {
+          id: el.getAttribute("data-check"),
+          pass: el.getAttribute("data-pass"),
+          bottom: r.bottom,
+          reading: el.querySelector("i")?.textContent ?? "",
+        };
+      });
+      const stop = document.querySelector(".capture .btn.stop")!.getBoundingClientRect();
+      return { vh: window.innerHeight, rows, stopBottom: stop.bottom, y: window.scrollY };
+    });
+
+    for (const r of m.rows) {
+      expect(r.bottom, `${r.id} fell off the bottom`).toBeLessThanOrEqual(m.vh + 1);
+    }
+    expect(m.stopBottom).toBeLessThanOrEqual(m.vh + 1);
+    expect(m.y).toBe(0);
+    console.log(
+      `  [doctor] ${m.rows.map((r) => `${r.id}=${r.pass}(${r.reading})`).join(" · ")}`,
+    );
+  });
+
+  test("a camera that cannot decode fails the checks rather than saying nothing", async ({
+    page,
+  }) => {
+    await openApp(page);
+    await page.getByRole("tab", { name: "Receive" }).click();
+    await page.getByRole("button", { name: "Check my setup" }).click();
+    await expect(page.locator("[data-doctor]")).toBeVisible({ timeout: 20_000 });
+    await page.waitForTimeout(4000);
+
+    // Chromium's fake camera shows a rolling pattern, never a code, so the
+    // decode check must fail — and it must say what to do about it.
+    const decode = page.locator('[data-check="decode"]');
+    await expect(decode).toHaveAttribute("data-pass", "false");
+    await expect(decode.locator("em")).not.toBeEmpty();
+  });
+});

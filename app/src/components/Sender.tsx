@@ -127,6 +127,7 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
   const [still, setStill] = useState(false);
   const [framesPerPass, setFramesPerPass] = useState(0);
   const [plan, setPlan] = useState<FramePlan | null>(null);
+  const [testPattern, setTestPattern] = useState(false);
   // Which quality settings this engine actually round-trips. Probed once.
   const [usable, setUsable] = useState<Set<Profile> | null>(null);
   const [stat, setStat] = useState({ frames: 0, fps: 0, chunk: 0, chunkCount: 0, elapsed: 0 });
@@ -174,6 +175,9 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
   useEffect(() => {
     if (!immersive) return;
     document.body.classList.add("immersive-open");
+    // The scrolling element is <html>, not <body>, in most engines — locking
+    // only the body still lets the page move behind the overlay.
+    document.documentElement.classList.add("immersive-open");
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") exitImmersive();
     };
@@ -186,6 +190,7 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
     document.addEventListener("fullscreenchange", onFs);
     return () => {
       document.body.classList.remove("immersive-open");
+      document.documentElement.classList.remove("immersive-open");
       window.removeEventListener("keydown", onKey);
       document.removeEventListener("fullscreenchange", onFs);
     };
@@ -495,8 +500,46 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
     if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
   }
 
+  /**
+   * ADR-0017 test pattern. A STATIC known frame — full palette, all four
+   * markers — so the person aiming can hold the phone still while the other
+   * side runs its checks. Nothing changes underneath them, which is the whole
+   * point: a moving target cannot be measured.
+   */
+  function showTestPattern() {
+    const known = new TextEncoder().encode(
+      "lightpipe test pattern — hold steady and run Check my setup on the receiving device.",
+    );
+    const payload = wrap({ name: "test-pattern.txt", mime: "text/plain" }, known);
+    bytesRef.current = payload;
+    setTestPattern(true);
+    setStill(true);
+    const s = buildSender(payload);
+    senderRef.current = s;
+    setManifest(s.manifest());
+    setPhase("sending");
+    onSendingChange(true);
+    stopLoop();
+    // One frame, then nothing. No animation at all.
+    requestAnimationFrame(() => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const f = s.nextFrame();
+      canvas.width = f.width;
+      canvas.height = f.height;
+      const ctx = canvas.getContext("2d", { alpha: false });
+      if (!ctx) return;
+      const view = new Uint8ClampedArray(optical.memory.buffer as ArrayBuffer, f.ptr, f.len);
+      ctx.putImageData(new ImageData(view, f.width, f.height), 0, 0);
+      setStat({ frames: 1, fps: 0, chunk: 0, chunkCount: 1, elapsed: 0 });
+      setFramesPerPass(1);
+    });
+    enterImmersive();
+  }
+
   function stop() {
     stopLoop();
+    setTestPattern(false);
     setPhase("ready");
     setStill(false);
     onSendingChange(false);
@@ -533,6 +576,16 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
             }
           }}
         >
+          <div className="notice small" style={{ marginBottom: 12 }}>
+            <strong>Start the receiving device first.</strong>
+            Get it aimed and reading before you start sending — this screen broadcasts blind and
+            cannot tell whether anyone is watching.{" "}
+            <button className="linkish" onClick={showTestPattern}>
+              Show a test pattern
+            </button>{" "}
+            so the other side can check its setup.
+          </div>
+
           <h2>1 · What are you sending?</h2>
           <p className="hint">
             Drop a file anywhere on this panel, or press ⌘V / Ctrl+V to send whatever is on your
@@ -855,6 +908,11 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
               {manifest?.displayCode ?? "—"}
             </div>
             <div className="strip-facts">
+              {testPattern && (
+                <span>
+                  <b>TEST PATTERN</b> — static
+                </span>
+              )}
               <span>
                 <b>{int(stat.frames)}</b> sent
               </span>

@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import optical from "../optical";
-import type { DecodeStats, FromWorker, ToWorker } from "../worker/protocol";
+import type { DecodeStats, DoctorReport, FromWorker, ToWorker } from "../worker/protocol";
 import {
   listCameras,
-  lockAutomatics,
+  applyCameraMode,
   openCamera,
   openScreen,
   screenCaptureSupported,
   screenLabel,
+  type CameraMode,
   type LockReport,
 } from "../lib/camera";
 import { checkQuota, type QuotaReport } from "../lib/file-source";
@@ -155,6 +156,17 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
   const [captureLabel, setCaptureLabel] = useState<string | null>(null);
   const [assumeAligned, setAssumeAligned] = useState(true);
   const [fellBack, setFellBack] = useState<number | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
+  /**
+   * Auto by default. A real Android capture came back visibly out of focus with
+   * focus pinned to manual — sharpness beats stability, and the user can still
+   * choose pinning here if their camera hunts badly.
+   */
+  const [cameraMode, setCameraMode] = useState<CameraMode>("auto");
+  /** ADR-0017 preflight: measure the link before committing to a transfer. */
+  const [doctor, setDoctor] = useState<DoctorReport | null>(null);
+  const doctorMode = useRef(false);
+
   const [running, setRunning] = useState(false);
   const [stats, setStats] = useState<DecodeStats>(EMPTY);
   const [error, setError] = useState<string | null>(null);
@@ -167,6 +179,18 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
   const [preview, setPreview] = useState<{ text?: string; url?: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [doneChunks, setDoneChunks] = useState<Set<number>>(new Set());
+
+  /**
+   * CAPTURE MODE. A person aiming a phone at another screen cannot scroll —
+   * both hands are holding the device steady. So while capturing, the view is
+   * the viewfinder plus the one number that matters, and everything else goes
+   * behind a disclosure.
+   *
+   * Unlike the send side an overlay is free here: the decoder reads the raw
+   * camera frame inside the worker, never the pixels we paint on screen.
+   */
+  const capturing = running && (source === "camera" || source === "screen");
+
 
   const workerRef = useRef<Worker | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -185,6 +209,34 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
   }, []);
+
+  /** Change focus/exposure policy on the live track, without restarting. */
+  async function switchCameraMode(mode: CameraMode) {
+    setCameraMode(mode);
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (track) setLock(await applyCameraMode(track, mode));
+  }
+
+  // Start playback once the viewfinder is genuinely visible.
+  useEffect(() => {
+    if (!capturing) return;
+    void videoRef.current?.play().catch(() => undefined);
+  }, [capturing]);
+
+  /**
+   * Lock the page while capturing. Nothing behind the viewfinder may scroll —
+   * a person holding a phone steady at another screen cannot scroll anyway, and
+   * a stray scroll would move the one number they are reading off the fold.
+   */
+  useEffect(() => {
+    if (!capturing) return;
+    document.body.classList.add("immersive-open");
+    // The scrolling element is <html>, not <body>, in most engines — locking
+    // only the body still lets the page move behind the overlay.
+    document.documentElement.classList.add("immersive-open");
+    return () => document.body.classList.remove("immersive-open");
+      document.documentElement.classList.remove("immersive-open");
+  }, [capturing]);
 
   // Object URLs for image previews are revoked when they are replaced or the
   // view goes away.
@@ -261,6 +313,9 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
             }
           })();
           break;
+        case "doctor":
+          setDoctor(m.report);
+          break;
         case "geometry-fallback":
           setFellBack(m.framesTried);
           break;
@@ -273,6 +328,13 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
     };
     workerRef.current = w;
     return w;
+  }
+
+  /** ADR-0017: run the checks instead of a transfer. */
+  async function startDoctor() {
+    doctorMode.current = true;
+    setDoctor(null);
+    await start();
   }
 
   async function start() {
@@ -289,7 +351,11 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
     w.postMessage({
       type: "init",
       fileName: "received.bin",
-      geometry: !aligned,
+      // The doctor measures a static pattern, so it always wants the full
+      // geometry path — that is one of the things being checked.
+      geometry: doctorMode.current ? true : !aligned,
+      doctor: doctorMode.current,
+      profiles: ["L0", "L1", "L2", "L3", "L4"],
     } satisfies ToWorker);
 
     if (source === "camera") {
@@ -297,13 +363,12 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
         const stream = await openCamera(deviceId || undefined);
         streamRef.current = stream;
         const track = stream.getVideoTracks()[0];
-        setLock(await lockAutomatics(track));
+        setLock(await applyCameraMode(track, cameraMode));
         setDevices(await listCameras());
-        const v = videoRef.current;
-        if (v) {
-          v.srcObject = stream;
-          await v.play();
-        }
+        // Attach only. Playback starts from an effect once the element is
+        // actually on screen: a display:none <video> never reaches
+        // readyState 2, so awaiting play() here silently starved the decoder.
+        if (videoRef.current) videoRef.current.srcObject = stream;
       } catch (err) {
         setError(
           `Camera unavailable: ${String(err)}. getUserMedia needs a secure context (https or localhost) and permission.`,
@@ -318,11 +383,7 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
         setLock(null);
         // The user can stop the share from the browser's own indicator.
         stream.getVideoTracks()[0]?.addEventListener("ended", () => stop());
-        const v = videoRef.current;
-        if (v) {
-          v.srcObject = stream;
-          await v.play();
-        }
+        if (videoRef.current) videoRef.current.srcObject = stream;
       } catch (err) {
         setError(
           `Screen capture was not started: ${String(err)}. It needs a secure context (https or localhost) and you have to pick a window in the browser's dialog.`,
@@ -406,6 +467,7 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
   function stop() {
     stopCapture();
     setRunning(false);
+    doctorMode.current = false;
     // Keep whatever completed. ADR-0006: dies at 70% -> you keep 70%.
     workerRef.current?.postMessage({ type: "finish" } satisfies ToWorker);
   }
@@ -440,6 +502,117 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
 
   const activePreset = SIMS.find((x) => x.id === sim) ?? SIMS[0];
   const alignedNow = isAlignedSource(source, activePreset) && !stats.geometryOn;
+  /**
+   * The honest "need more".
+   *
+   * The core returns 1 before any header has decoded, which reads as "almost
+   * done" when in fact nothing has been seen at all — the user reported exactly
+   * that: NEED MORE 1 next to 0 B received and 153 unreadable frames. Until a
+   * manifest exists there is no true answer, so say so.
+   */
+  const haveManifest = Boolean(stats.manifest);
+  const needValue = haveManifest && stats.neededMore >= 0 ? stats.neededMore : null;
+
+  /** Four words is about all a person can absorb while holding a phone up. */
+  const aimShort =
+    stats.quality > 0.75
+      ? "Sharp — hold it there"
+      : stats.quality > 0.4
+        ? "Move closer"
+        : "Too soft — get closer";
+  const troubleShort =
+    stats.lastReason === "bad_crc" ? "Hold steadier — less glare" : "Move closer — fill the frame";
+
+  /**
+   * SETUP ONLY. Everything here is static for the length of a scan — which
+   * camera, what it pinned, how much room is left. Every LIVE value is on the
+   * capture screen itself: when a scan is not working you have to be able to
+   * see why without tapping anything.
+   */
+  function details() {
+    return (
+      <div className="detail-body">
+        {source === "camera" && (
+          <div className="detail-block">
+            <b>Camera</b>
+            <div>
+              <label className="small">
+                <input
+                  type="radio"
+                  name="cammode"
+                  checked={cameraMode === "auto"}
+                  onChange={() => void switchCameraMode("auto")}
+                />{" "}
+                Autofocus (recommended)
+              </label>{" "}
+              <label className="small">
+                <input
+                  type="radio"
+                  name="cammode"
+                  checked={cameraMode === "pinned"}
+                  onChange={() => void switchCameraMode("pinned")}
+                />{" "}
+                Pinned (advanced)
+              </label>
+            </div>
+            {lock && (
+              <>
+                <div>{lock.note}</div>
+                <div className="muted">
+                  now: {lock.achieved?.join(", ") || "not reported"} · applied:{" "}
+                  {lock.applied.join(", ") || "none"} · refused:{" "}
+                  {lock.refused.join(", ") || "none"} · not offered:{" "}
+                  {lock.unsupported.join(", ") || "none"}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {running && source === "screen" && (
+          <div className="detail-block">
+            <b>Capturing {captureLabel ?? "your selection"}</b>
+            <div>
+              {stats.geometryOn
+                ? stats.geometrySkipSupported
+                  ? "Searching for the code in the picture. That works whether or not the window is scaled, it just costs more time per frame."
+                  : "This build cannot be told to skip the alignment search, so it is doing that work even though a screen grab does not need it. It still decodes correctly — it is simply slower than it has to be."
+                : "Reading the grid directly — no alignment search, because a screen grab does not need one."}
+            </div>
+          </div>
+        )}
+
+        {fellBack !== null && (
+          <div className="detail-block">
+            <b>Turned the alignment search back on</b>
+            <div>
+              Nothing decoded in the first {fellBack} frames, so the captured window is not a
+              straight one-to-one copy of the sending screen — probably windowed or scaled.
+              Still decoding, just doing more work per frame.
+            </div>
+          </div>
+        )}
+
+        {noSignal && (
+          <div className="detail-block">
+            <b>Nothing is decoding</b>
+            <div>{noSignal}</div>
+          </div>
+        )}
+
+        {quota && (
+          <div className="detail-block">
+            <b>Storage</b>
+            <div className="muted">
+              {bytes(quota.free)} free of {bytes(quota.quota)}
+              {stats.manifest && !quota.enough ? " — not enough for this one" : ""}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   const man = stats.manifest;
   const pct = man ? Math.min(1, stats.bytesWritten / Math.max(1, man.totalBytes)) : 0;
   const eta =
@@ -457,13 +630,25 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
       )}
 
       <div className="panel">
-        <h2>1 · Where are the pixels coming from?</h2>
-        <p className="hint">
-          Point a camera at the other screen, or — if you are already looking at that machine
-          over remote desktop — capture the window directly. Either way the file crosses as
-          light, never as a file transfer.
-        </p>
-        <div className="row">
+        {/* Setup only. While the phone is held up there must be nothing here
+            but the viewfinder, the HUD and stop — every extra control pushes
+            the one number that matters below the fold. */}
+        {!capturing && (
+          <div className="notice ok small" style={{ marginBottom: 12 }}>
+            <strong>Start here, before the sending device.</strong>
+            This side needs aiming and focus settled first. Point it at the other screen, then
+            start sending there.
+          </div>
+        )}
+        {!capturing && <h2>1 · Where are the pixels coming from?</h2>}
+        {!capturing && (
+          <p className="hint">
+            Point a camera at the other screen, or — if you are already looking at that machine
+            over remote desktop — capture the window directly. Either way the file crosses as
+            light, never as a file transfer.
+          </p>
+        )}
+        <div className="row" hidden={capturing}>
           <label className="small muted">
             Source{" "}
             <select
@@ -512,9 +697,20 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
             </label>
           )}
           {!running ? (
-            <button className="btn primary" onClick={() => void start()}>
-              Start receiving
-            </button>
+            <>
+              <button
+                className="btn primary"
+                onClick={() => {
+                  doctorMode.current = false;
+                  void start();
+                }}
+              >
+                Start receiving
+              </button>
+              <button className="btn" onClick={() => void startDoctor()}>
+                Check my setup
+              </button>
+            </>
           ) : (
             <button className="btn" onClick={stop}>
               Stop
@@ -547,70 +743,156 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
           </div>
         )}
 
-        <video
-          ref={videoRef}
-          className="preview"
-          style={{
-            marginTop: 14,
-            display: (source === "camera" || source === "screen") && running ? "block" : "none",
-          }}
-          playsInline
-          muted
-        />
+        {/* ONE video element for both layouts: only the wrapper's class
+            changes, so switching into capture mode never remounts it and never
+            drops the MediaStream. */}
+        <div className={capturing ? "capture" : "preview-wrap"} hidden={!capturing}>
+          <video ref={videoRef} className="capture-video" playsInline muted />
 
-        {running && source === "screen" && (
-          <div className="notice ok small" style={{ marginTop: 14 }}>
-            <strong>Capturing {captureLabel ?? "your selection"}</strong>
-            {stats.geometryOn
-              ? stats.geometrySkipSupported
-                ? "Searching for the code in the picture. That works whether or not the window is scaled, it just costs more time per frame."
-                : "This build cannot be told to skip the alignment search, so it is doing that work even though a screen grab does not need it. It still decodes correctly — it is simply slower than it has to be."
-              : "Reading the grid directly — no alignment search, because a screen grab does not need one."}
-          </div>
-        )}
+          {capturing && (
+            <div className="hud">
+              {/* The viewfinder is for AIMING, so it only has to be big enough
+                  to see whether the code is in frame. Everything it does not
+                  need goes to the numbers, which are what tell you why a scan
+                  is not working. */}
+              <div className="hud-view">
+                <div className="need">
+                  <div className="need-value" data-stat="need">
+                    {needValue === null ? "—" : int(needValue)}
+                  </div>
+                  <div className="need-label">
+                    {needValue === null ? "looking for a code" : "need more"}
+                  </div>
+                </div>
+              </div>
 
-        {fellBack !== null && (
-          <div className="notice warn small" style={{ marginTop: 14 }}>
-            <strong>Turned the alignment search back on.</strong>
-            Nothing decoded in the first {fellBack} frames, so the captured window is not a
-            straight one-to-one copy of the sending screen — it is probably windowed or scaled.
-            Still decoding, just doing more work per frame.
-          </div>
-        )}
+              {doctorMode.current && doctor ? (
+                <div className="hud-status doctor" data-doctor="1">
+                  <div className={`doc-verdict ${doctor.verdict}`} data-stat="verdict">
+                    {doctor.summary}
+                  </div>
+                  <ul className="doc-checks">
+                    {doctor.checks.map((c) => (
+                      <li key={c.id} data-check={c.id} data-pass={String(c.pass)}>
+                        <span className={`dot ${c.pass === null ? "wait" : c.pass ? "ok" : "bad"}`} />
+                        <b>{c.label}</b>
+                        <i>{c.reading}</i>
+                        {c.pass === false && <em>{c.remedy}</em>}
+                      </li>
+                    ))}
+                  </ul>
+                  {doctor.recommend && (
+                    <div className="doc-rec">
+                      Recommended speed setting, from what was measured:{" "}
+                      <b>{doctor.recommend}</b>
+                    </div>
+                  )}
+                </div>
+              ) : (
+              <div className="hud-status">
+                {/* One short line. A person holding a phone up can take in
+                    about four words. */}
+                <div className="hud-problem" data-stat="problem">
+                  {noSignal ? <b className="bad-text">{troubleShort}</b> : <span>{aimShort}</span>}
+                </div>
 
-        {lock && source === "camera" && (
-          <div className="notice small" style={{ marginTop: 14 }}>
-            <strong>Camera settings</strong>
-            {lock.note}
-            <div className="muted" style={{ marginTop: 6 }}>
-              pinned: {lock.applied.join(", ") || "none"} · refused:{" "}
-              {lock.refused.join(", ") || "none"} · not offered:{" "}
-              {lock.unsupported.join(", ") || "none"}
+                <div className={`aim${stats.quality > 0.75 ? " ok" : ""}`} data-stat="quality">
+                  <i style={{ width: `${(stats.quality * 100).toFixed(0)}%` }} />
+                </div>
+
+                {/* Dense: small labels, compact values, no card chrome. Every
+                    live number is on screen at once — nothing to tap open, and
+                    nothing to scroll to. */}
+                <div className="hud-grid">
+                  <div className="hg" data-stat="received">
+                    <span>received</span>
+                    <b>
+                      {bytes(stats.bytesWritten)}
+                      {man ? `/${bytes(man.totalBytes)}` : ""}
+                    </b>
+                  </div>
+                  <div className="hg" data-stat="speed">
+                    <span>speed</span>
+                    <b>{rate(stats.bytesPerSec)}</b>
+                  </div>
+                  <div className="hg" data-stat="pieces">
+                    <span>pieces</span>
+                    <b>
+                      {int(stats.chunksComplete)}/{int(stats.chunkCount || 0)}
+                    </b>
+                  </div>
+                  <div className="hg" data-stat="left">
+                    <span>time left</span>
+                    <b>{duration(eta)}</b>
+                  </div>
+                  <div className="hg" data-stat="rate">
+                    <span>frames/s</span>
+                    <b>{stats.fps}</b>
+                  </div>
+                  <div className="hg" data-stat="seen">
+                    <span>seen</span>
+                    <b>{int(stats.framesSeen)}</b>
+                  </div>
+                  <div className="hg" data-stat="unreadable">
+                    <span>unreadable</span>
+                    <b>{int(stats.erasures)}</b>
+                  </div>
+                  <div className="hg" data-stat="repeats">
+                    <span>already had</span>
+                    <b>{int(stats.duplicates)}</b>
+                  </div>
+                </div>
+              </div>
+              )}
+
+              <div className="hud-bottom">
+                <button className="btn stop" onClick={stop}>
+                  STOP
+                </button>
+                {/* Only genuinely static setup lives behind this: the pinned
+                    camera settings, free storage, which device. None of it
+                    changes while scanning. */}
+                <button
+                  className="btn ghost"
+                  aria-expanded={showDetails}
+                  onClick={() => setShowDetails((v) => !v)}
+                >
+                  {showDetails ? "Hide setup" : "Setup"}
+                </button>
+              </div>
+
+              {showDetails && <div className="hud-sheet">{details()}</div>}
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
-        {quota && (
-          <div className="small muted" style={{ marginTop: 10 }}>
-            Space for the incoming file: {bytes(quota.free)} free of {bytes(quota.quota)}
-            {man && !quota.enough ? " — not enough for this one" : ""}
-          </div>
+        {/* Not capturing: the same detail, in a normal collapsed disclosure. */}
+        {!capturing && (
+          <details
+            className="details-card"
+            open={showDetails}
+            onToggle={(e) => setShowDetails((e.currentTarget as HTMLDetailsElement).open)}
+          >
+            <summary>Details</summary>
+            {details()}
+          </details>
         )}
       </div>
 
-      {noSignal && (
-        <div className="notice bad" style={{ marginBottom: 16 }}>
-          <strong>Nothing is decoding</strong>
-          {noSignal}
+      {noSignal && !capturing && (
+        <div className="notice bad compact" style={{ marginBottom: 16 }}>
+          <strong>{troubleShort}</strong>
+          <button className="linkish" onClick={() => void startDoctor()}>
+            run Check my setup to find out why
+          </button>
         </div>
       )}
 
       <div className="panel">
         <h2>2 · Coming in</h2>
         <p className="hint">
-          Some frames will not be readable. That is expected and costs nothing — the sending
-          screen keeps repeating until everything has arrived. The only number that matters is
-          <strong> need more</strong>, and it should keep falling.
+          The number to watch is <strong>need more</strong>. It should keep falling. Everything
+          else is in Details.
         </p>
 
         {!alignedNow && (
@@ -622,11 +904,7 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
               <i style={{ width: `${(stats.quality * 100).toFixed(0)}%` }} />
             </div>
             <div className="small muted" style={{ marginTop: 4, marginBottom: 16 }}>
-              {stats.quality > 0.75
-                ? "Sharp. Hold it there."
-                : stats.quality > 0.4
-                  ? "Not quite. Move closer so the other screen fills the view, and hold steadier."
-                  : "Too soft to read. Get closer, hold still, clean the lens, and kill any glare."}
+              {aimShort}
             </div>
           </>
         )}
@@ -640,7 +918,7 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
         <div className="stats">
           <div className="stat">
             <div className="k">need more</div>
-            <div className="v">{stats.neededMore < 0 ? "—" : int(stats.neededMore)}</div>
+            <div className="v">{needValue === null ? "—" : int(needValue)}</div>
           </div>
           <div className="stat">
             <div className="k">pieces done</div>
@@ -662,31 +940,6 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
           <div className="stat">
             <div className="k">time left</div>
             <div className="v small">{duration(eta)}</div>
-          </div>
-          <div className="stat">
-            <div className="k">frames read</div>
-            <div className="v">{stats.fps}/s</div>
-          </div>
-          <div className="stat">
-            <div className="k">frames seen</div>
-            <div className="v small">{int(stats.framesSeen)}</div>
-          </div>
-          <div className="stat">
-            <div className="k">unreadable</div>
-            <div className="v small">
-              {int(stats.erasures)}{" "}
-              <span className="muted" style={{ fontWeight: 400 }}>
-                fine
-              </span>
-            </div>
-          </div>
-          <div className="stat">
-            <div className="k">already had</div>
-            <div className="v small">{int(stats.duplicates)}</div>
-          </div>
-          <div className="stat">
-            <div className="k">resume code</div>
-            <div className="v small">{stats.resumeCode || "—"}</div>
           </div>
         </div>
 

@@ -1,17 +1,21 @@
 /**
- * Camera acquisition, and the part that matters: turning the camera's automatic
- * behaviours OFF.
+ * Camera acquisition, and the automatic behaviours.
  *
- * A flashing cell grid is pathological input for autofocus, auto-exposure and
- * auto-white-balance. All three hunt: the focus motor searches, the exposure
- * pumps, the WB drifts colour-by-colour — and the decoder pays for all of it.
- * Where `MediaTrackConstraints` allows, we pin them.
+ * A flashing cell grid is awkward input for autofocus, auto-exposure and
+ * auto-white-balance — they hunt. But a real capture proved that pinning focus
+ * is far worse than letting it hunt (see `applyCameraMode`), so the default is
+ * now auto and pinning is an explicit choice.
  *
- * Support is patchy and honest reporting matters more than the attempt, so
- * `lockAutomatics` returns exactly what the browser said it did.
+ * Support is patchy and honest reporting matters more than the attempt, so the
+ * report carries what was asked, what applied, and what the camera says it is
+ * actually doing.
  */
 
 export interface LockReport {
+  /** which mode was asked for */
+  mode: CameraMode;
+  /** what the camera reports it is ACTUALLY doing, read back after applying */
+  achieved?: string[];
   requested: string[];
   applied: string[];
   refused: string[];
@@ -43,8 +47,39 @@ export async function listCameras(): Promise<MediaDeviceInfo[]> {
   return devices.filter((d) => d.kind === "videoinput");
 }
 
-export async function lockAutomatics(track: MediaStreamTrack): Promise<LockReport> {
+export type CameraMode = "auto" | "pinned";
+
+/**
+ * Camera modes, and why the default changed.
+ *
+ * THE EVIDENCE. A photograph of a real Android capture showed all four corner
+ * markers cleanly framed and the image badly OUT OF FOCUS — cells smeared into
+ * each other — while the app reported `focusMode=manual, exposureMode=manual,
+ * whiteBalanceMode=manual · refused: none`. 385 frames seen, 385 unreadable.
+ *
+ * Pinning focus to `manual` does not mean "hold the focus you have"; it fixes
+ * the lens at whatever `focusDistance` the device happened to hold, and on a
+ * phone that is rarely right for a screen at arm's length. The lock applied
+ * successfully and destroyed the capture.
+ *
+ * The original reasoning — automatics hunt against a flashing screen — is real
+ * but secondary: a hunting camera is sharp most of the time, a mis-pinned one
+ * is sharp never. And a screen at a fixed distance gives autofocus very little
+ * to hunt for. Sharpness wins.
+ *
+ * White balance is the same trade and we need it even less: the calibration
+ * strip (ADR-0003) fits a correction per frame, so drift is already absorbed —
+ * pinning it only risks locking in a bad value.
+ *
+ * So AUTO is the default, PINNED stays available from the setup screen, and
+ * whichever is chosen the achieved state is reported rather than assumed.
+ */
+export async function applyCameraMode(
+  track: MediaStreamTrack,
+  mode: CameraMode = "auto",
+): Promise<LockReport> {
   const report: LockReport = {
+    mode,
     requested: [],
     applied: [],
     refused: [],
@@ -57,52 +92,70 @@ export async function lockAutomatics(track: MediaStreamTrack): Promise<LockRepor
     typeof track.getCapabilities === "function" ? track.getCapabilities() : {}
   ) as ExtendedCapabilities;
 
-  const wanted: Array<[string, unknown, string[] | undefined]> = [
-    ["focusMode", "manual", caps.focusMode],
-    ["exposureMode", "manual", caps.exposureMode],
-    ["whiteBalanceMode", "manual", caps.whiteBalanceMode],
-  ];
+  /**
+   * Preference order per control.
+   *
+   * In AUTO, focus is never pinned — that is the whole point. `continuous`
+   * first, `single-shot` as a fallback (it converges once and then stops
+   * hunting, which is the best of both).
+   */
+  const plan: Array<{ name: string; supported?: string[]; order: string[] }> =
+    mode === "pinned"
+      ? [
+          { name: "focusMode", supported: caps.focusMode, order: ["manual", "single-shot", "continuous"] },
+          { name: "exposureMode", supported: caps.exposureMode, order: ["manual", "single-shot", "continuous"] },
+          {
+            name: "whiteBalanceMode",
+            supported: caps.whiteBalanceMode,
+            order: ["manual", "single-shot", "continuous"],
+          },
+        ]
+      : [
+          { name: "focusMode", supported: caps.focusMode, order: ["continuous", "single-shot"] },
+          { name: "exposureMode", supported: caps.exposureMode, order: ["continuous", "single-shot"] },
+          {
+            name: "whiteBalanceMode",
+            supported: caps.whiteBalanceMode,
+            order: ["continuous", "single-shot"],
+          },
+        ];
 
-  for (const [name, value, supported] of wanted) {
-    if (!supported || !Array.isArray(supported)) {
-      report.unsupported.push(name);
+  for (const c of plan) {
+    if (!c.supported || !Array.isArray(c.supported)) {
+      report.unsupported.push(c.name);
       continue;
     }
-    if (!supported.includes(value as string)) {
-      // Some cameras offer only "continuous"/"single-shot". "single-shot" still
-      // beats continuous: it stops the hunt after one converge.
-      const fallback = supported.includes("single-shot") ? "single-shot" : null;
-      if (!fallback) {
-        report.unsupported.push(`${name} (offers: ${supported.join("/")})`);
-        continue;
-      }
-      report.requested.push(`${name}=${fallback}`);
-      try {
-        await track.applyConstraints({ advanced: [{ [name]: fallback }] } as MediaTrackConstraints);
-        report.applied.push(`${name}=${fallback}`);
-      } catch {
-        report.refused.push(`${name}=${fallback}`);
-      }
+    const target = c.order.find((v) => c.supported!.includes(v));
+    if (!target) {
+      report.unsupported.push(`${c.name} (offers: ${c.supported.join("/")})`);
       continue;
     }
-    report.requested.push(`${name}=${value}`);
+    report.requested.push(`${c.name}=${target}`);
     try {
-      await track.applyConstraints({ advanced: [{ [name]: value }] } as MediaTrackConstraints);
-      report.applied.push(`${name}=${value}`);
+      await track.applyConstraints({ advanced: [{ [c.name]: target }] } as MediaTrackConstraints);
+      report.applied.push(`${c.name}=${target}`);
     } catch {
-      report.refused.push(`${name}=${value}`);
+      report.refused.push(`${c.name}=${target}`);
     }
   }
 
-  report.settings = (track.getSettings?.() ?? {}) as Record<string, unknown>;
+  // Report what the camera actually ended up doing, not what we asked for.
+  const settled = (track.getSettings?.() ?? {}) as Record<string, unknown>;
+  report.settings = settled;
+  report.achieved = ["focusMode", "exposureMode", "whiteBalanceMode"]
+    .map((k) => (settled[k] === undefined ? null : `${k}=${String(settled[k])}`))
+    .filter((v): v is string => v !== null);
 
-  if (report.applied.length === 0) {
+  if (mode === "auto") {
     report.note =
-      "This camera exposes no manual controls. It will keep hunting focus and exposure against the flashing grid — expect more dropped frames. Steady the device and keep the light constant.";
-  } else if (report.unsupported.length || report.refused.length) {
-    report.note = "Partially locked. The rest stay automatic and will hunt.";
+      report.applied.length > 0
+        ? "Autofocus is on. A sharp picture matters more than a steady one — a pinned focus is what stopped a real phone from ever decoding."
+        : "This camera exposes no focus or exposure controls. It will do whatever it does; hold steady and keep the light constant.";
   } else {
-    report.note = "Focus, exposure and white balance are pinned.";
+    report.note =
+      report.applied.length > 0
+        ? "Pinned. This stops the camera hunting against the flashing screen, but if the picture looks soft, switch back to autofocus — a pinned focus can sit at the wrong distance."
+        : "This camera exposes no manual controls, so nothing could be pinned.";
   }
   return report;
 }

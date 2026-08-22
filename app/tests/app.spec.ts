@@ -63,8 +63,10 @@ test.describe("lightpipe", () => {
     // 100% of its own reported capacity. These thresholds assert what the app
     // controls and will fail loudly if the fit regresses. Raise them when the
     // engine fills its frames.
-    expect(ink!.litRowFraction).toBeGreaterThan(0.1);
-    expect(ink!.colouredFraction).toBeGreaterThan(0.03);
+    // Measured on the shipped core: a ~100 B note reaches 57% lit rows and 28%
+    // coloured area at 840x473. These floors sit just under that.
+    expect(ink!.litRowFraction).toBeGreaterThan(0.45);
+    expect(ink!.colouredFraction).toBeGreaterThan(0.22);
   });
 
   test("portrait and landscape both render the right shape and both decode", async ({ page }) => {
@@ -208,6 +210,8 @@ test.describe("lightpipe", () => {
     // that the failure is reported rather than hung.
     const outcome = await waitForOutcome(page, 30_000);
     expect(["no-signal", "failed"]).toContain(outcome);
-    await expect(page.locator(".app")).toContainText(/Camera settings|too low-resolution/);
+    await expect(page.locator(".app")).toContainText(
+      /Move closer|Hold steadier|too low-resolution|Camera/,
+    );
   });
 });
