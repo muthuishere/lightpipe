@@ -37,7 +37,7 @@ jobs:
         working-directory: app
         env:
           # Project pages are served from /<repo>/, not /
-          BASE_PATH: /transfer-qr/
+          BASE_PATH: /lightpipe/
         run: |
           npm ci
           npm run build

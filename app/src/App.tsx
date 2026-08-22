@@ -17,7 +17,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="top">
-        <h1>transfer-qr</h1>
+        <h1>lightpipe</h1>
         <span className="sub">a file, moved with nothing but light</span>
         <span className={`impl-badge ${optical.implementation}`}>
           {optical.implementation === "mock" ? "mock core" : "wasm core"}

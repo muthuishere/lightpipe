@@ -1,4 +1,4 @@
-# transfer-qr
+# lightpipe
 
 Move a file between two devices using **nothing but light**. One screen animates a
 grid of coloured cells; the other device's camera reads them. No network, no

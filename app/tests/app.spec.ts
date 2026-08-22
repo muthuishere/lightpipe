@@ -13,12 +13,12 @@ import {
   waitForOutcome,
 } from "./helpers";
 
-test.describe("transfer-qr", () => {
+test.describe("lightpipe", () => {
   test("loads on the real wasm core with no console errors", async ({ page }) => {
     const errors = await openApp(page);
     await expect(page.locator(".impl-badge")).toHaveText(/wasm core/i);
     await expect(page.locator(".impl-badge")).not.toHaveText(/mock/i);
-    await expect(page.locator("h1")).toHaveText("transfer-qr");
+    await expect(page.locator("h1")).toHaveText("lightpipe");
     expect(errors, `console/page errors: ${errors.join(" | ")}`).toEqual([]);
   });
 

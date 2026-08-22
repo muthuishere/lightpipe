@@ -111,7 +111,7 @@ tasks:
     desc: 'Production build of the app, exactly as GitHub Pages builds it'
     deps: [wasm:build]
     cmds:
-      - cd app && npm ci && BASE_PATH=/transfer-qr/ npm run build
+      - cd app && npm ci && BASE_PATH=/lightpipe/ npm run build
 
   adr:
     desc: List architecture decisions

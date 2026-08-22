@@ -22,8 +22,8 @@ use crate::image::RgbImage;
 use crate::modem;
 use crate::palette::Palette;
 
-/// "TQ" — transfer-qr.
-pub const MAGIC: u16 = 0x5451;
+/// "LP" — lightpipe.
+pub const MAGIC: u16 = 0x4C50;
 /// Wire format version of the header record.
 pub const VERSION: u8 = 1;
 /// RaptorQ Object Transmission Information, carried opaquely (the fountain layer

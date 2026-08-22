@@ -1,8 +1,8 @@
 ---
-description: Advance the transfer-qr spike ladder by exactly one step
+description: Advance the lightpipe spike ladder by exactly one step
 ---
 
-You are running one iteration of the transfer-qr spike loop.
+You are running one iteration of the lightpipe spike loop.
 
 ## Read first (cheap, do not skip)
 1. `docs/spikes/PLAN.md` — the ladder and current STATUS values.

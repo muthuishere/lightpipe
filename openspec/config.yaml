@@ -1,7 +1,7 @@
 schema: spec-driven
 
 context: |
-  transfer-qr — air-gapped optical file transfer.
+  lightpipe — air-gapped optical file transfer.
 
   A file is transmitted as an animated grid of coloured cells on one device's
   screen and read by another device's camera. No network, no Bluetooth, no

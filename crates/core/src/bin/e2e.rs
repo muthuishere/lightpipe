@@ -891,7 +891,7 @@ fn main() {
         "camera,payload,payload_bytes,stage,bytes_per_frame,stage_factor,cumulative_efficiency\n",
     );
 
-    r.line("transfer-qr — END-TO-END INTEGRATION (S0..S5 in one pass)");
+    r.line("lightpipe — END-TO-END INTEGRATION (S0..S5 in one pass)");
     r.line("=========================================================");
     r.line("");
     r.line("Chain: file -> chunk+gzip+manifest -> RaptorQ -> header+CRC -> cells ->");

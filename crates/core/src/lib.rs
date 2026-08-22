@@ -1,4 +1,4 @@
-//! transfer-qr optical core.
+//! lightpipe optical core.
 //!
 //! Pure: no I/O, no DOM, no camera, no network (ADR-0009). The whole system is
 //! `bytes -> Vec<RgbImage>` and `Vec<RgbImage> -> bytes`, which makes every layer
