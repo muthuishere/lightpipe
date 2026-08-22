@@ -1,7 +1,7 @@
 {
   "name": "lightpipe",
   "version": "0.1.0",
-  "description": "Move a file between two devices using nothing but light \u2014 a screen animates coloured cells, a camera reads them. Serves the whole app locally; no internet, ever.",
+  "description": "Move a file between two devices using nothing but light — a screen animates coloured cells, a camera reads them. Serves the whole app locally; no internet, ever.",
   "keywords": [
     "lightpipe",
     "air-gap",
@@ -31,7 +31,6 @@
     "start": "node bin/lightpipe.js"
   },
   "dependencies": {
-    "node-forge": "^1.4.0",
     "qrcode-terminal": "^0.12.0"
   },
   "repository": {

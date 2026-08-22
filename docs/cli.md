@@ -10,29 +10,33 @@ in `send` / `receive` mode, drives it through its own UI exactly as a human
 would. Nothing under `app/` is modified or aware of it.
 
 ```bash
-npx lightpipe send report.pdf     # serve, open a browser, start broadcasting
-npx lightpipe send --text "hi"    # a literal string, sent as markdown
-cat notes.md | npx lightpipe send # stdin
-npx lightpipe receive camera      # capture from the webcam (the default)
-lightpipe receive screen      # capture a screen/window — 21x faster, see below
-lightpipe receive --out ./in  # write the finished file straight to disk
-npx lightpipe serve               # just serve; choose a mode in the browser
-npx lightpipe --host 0.0.0.0      # expose on the LAN; prints the LAN URL + a QR
+npx lightpipe send report.pdf      # serve, open a browser, start broadcasting
+npx lightpipe send --text "hi"     # a literal string, sent as markdown
+cat notes.md | npx lightpipe send  # stdin
+npx lightpipe receive camera       # capture from the webcam (the default)
+npx lightpipe receive screen       # capture a screen/window — 21x faster, see below
+npx lightpipe receive --out ./in   # write the finished file straight to disk
+npx lightpipe serve                # just serve; choose a mode in the browser
+npx lightpipe --host 0.0.0.0       # expose on the LAN; prints the LAN URL + a QR
 ```
 
-## Which device does which job
+## No certificates, ever
 
-| | sender | receiver |
+Every real path is already a **secure context**, which is what `getUserMedia`
+and `getDisplayMedia` require:
+
+| path | origin | secure context |
 |---|---|---|
-| needs a camera | no | **yes** |
-| needs a secure context | no | **yes** (`getUserMedia`) |
-| `http://localhost` | fine | fine — it *is* a secure context |
-| `http://<lan-ip>` | fine | **no** — not a secure context |
+| desktop sender | `http://localhost` | yes |
+| desktop receiver, camera or screen | `http://localhost` | yes |
+| phone receiver | the public HTTPS site | yes |
 
-So the normal shape is: **desktop sends over plain `http://localhost`, phone
-receives from the public HTTPS site.** The CLI's default costs nothing and
-solves the desktop case completely. `--https` exists only for the fully-offline
-case, where the phone is on the LAN with no internet at all.
+So lightpipe generates no certificate, creates no certificate authority, and
+**never writes a private key anywhere**. There is nothing to trust, nothing to
+install, and nothing to remove afterwards — which is the right posture for a
+tool whose entire premise is the air gap.
+
+`--https` is bring-your-own only (see below).
 
 ## Receive from a screen if you can — it is 21x faster
 
@@ -133,66 +137,40 @@ Verified in Chromium against the CLI's own server: `crossOriginIsolated === true
 round trip completes, and there are no console errors. `--no-isolation` turns it
 off if some future browser disagrees.
 
-## `--https`, and what it costs
+## `--https` — bring your own certificate
 
-Only needed when a phone with **no internet** must use its camera.
+```bash
+lightpipe --https --cert ./cert.pem --key ./key.pem
+```
 
-On the first `--https` run the CLI generates, in pure JS and with no elevation:
+That is the whole feature. Without **both** flags it exits 2 with a message
+explaining that it does not generate certificates and that you almost certainly
+do not need TLS:
 
-* a **local certificate authority** — `~/.config/lightpipe/ca.crt` and
-  `ca.key` (mode `0600`, in a `0700` directory), valid 5 years;
-* a **leaf certificate** it signs, valid 397 days (longer is rejected outright
-  by Apple platforms), covering `localhost`, `127.0.0.1`, `::1`, every current
-  LAN IPv4 of the machine, and any `--host` you named.
+```
+lightpipe: --https serves a certificate you supply — pass both --cert and --key.
+  It does not generate one, and never writes a private key anywhere.
+  You probably do not need TLS at all: http://localhost is already a secure
+  context, so a desktop can send or receive there, and a phone should use the
+  public HTTPS site.
+```
 
-If the machine's LAN address changes — new Wi-Fi, new DHCP lease — the SAN list
-no longer covers it, and the CLI **detects that and regenerates the leaf from
-the same CA automatically**. That matters: a name mismatch after you have
-already trusted the CA is a baffling failure, and because the CA is unchanged
-you do not repeat the phone steps. `--regenerate-cert` forces the whole lot.
+If a second machine opens the LAN URL over plain `http://`, the terminal says
+plainly that it can render frames but cannot use its camera or capture its
+screen there, and that the fix is to run lightpipe on *that* machine and use its
+own `http://localhost`.
 
-Because a phone cannot fetch a CA over a TLS connection it does not yet trust,
-`--https` also starts a **tiny plain-HTTP listener** that serves `GET /ca.crt`
-(`application/x-x509-ca-cert`) and nothing else. The terminal prints that URL and
-a QR of it, then the app's URL and a QR of that. Scan, install, scan, use.
+## Not supported (deferred)
 
-`--cert` / `--key` bypass all of this. That is also the route for
-[mkcert](https://github.com/FiloSottile/mkcert) if you already run it:
-`mkcert localhost 192.168.1.42 && lightpipe --https --cert ./localhost+1.pem --key ./localhost+1-key.pem`.
-
-### The tradeoff, stated plainly
-
-Installing this CA on a device means **anything holding
-`~/.config/lightpipe/ca.key` can mint a certificate that device will trust for
-any site**, not just this one. The key is `0600` and never leaves the machine
-that made it — but that is the entire protection. If the machine is compromised,
-so is every device you taught to trust it. Remove the CA from the phone when you
-are done.
-
-### Trusting it on a phone
-
-**iOS / iPadOS** — three steps, and the third is the one people miss:
-
-1. open the `/ca.crt` URL in Safari → *Profile Downloaded*
-2. Settings → General → VPN & Device Management → install the profile
-3. Settings → General → About → **Certificate Trust Settings → switch it on**
-   (step 2 alone is *not* enough)
-
-Remove later: Settings → General → VPN & Device Management → Remove.
-
-**Android 7+** — download the file, then Settings → Security → Encryption &
-credentials → Install a certificate → **CA certificate**, and accept the
-warning. The device needs a screen lock. Since Android 7 apps ignore
-user-installed CAs by default, but Chrome honours them for browsing, which is
-all this needs. Remove later from the same screen.
-
-> **Verified vs. documented.** The certificate chain itself was verified on this
-> machine: `openssl verify -CAfile ca.crt cert.pem` → OK, correct SANs, `CA:TRUE`
-> on the CA and `CA:FALSE` + `serverAuth` on the leaf, and a real TLS fetch of
-> the app and the `.wasm` through it. The **iOS and Android install flows above
-> are documented from knowledge, not exercised on a handset** — no phone was in
-> the loop. Treat the step counts as a guide, and the platform's own wording as
-> the truth.
+LAN access from a phone or a second machine over HTTPS is deliberately not
+supported today. It is not needed: loopback (`http://localhost`, `127.0.0.1`,
+`::1`) is a W3C secure context, so camera, screen capture, OPFS and
+`SharedArrayBuffer` all work over plain HTTP, and a phone uses the hosted GitHub
+Pages build, which is already HTTPS. A generated local CA was removed rather
+than kept because it means a private key on disk and a trust prompt on every
+device — a poor trade for a security-adjacent tool when nothing currently needs
+it. `--cert` / `--key` remains for anyone who brings their own certificate.
+Revisit only if an enterprise case demands it.
 
 ## Building and publishing
 

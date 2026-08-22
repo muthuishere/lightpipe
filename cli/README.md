@@ -10,14 +10,14 @@ tool works on a machine with no internet at all. Zero telemetry, no update
 check, no outbound socket, ever.
 
 ```bash
-npx lightpipe send report.pdf      # serve, open a browser, START BROADCASTING
-npx lightpipe send --text "hi"     # a literal string, sent as markdown
-cat notes.md | npx lightpipe send  # stdin
-npx lightpipe receive camera      # capture from the webcam (the default)
-npx lightpipe receive screen      # capture a screen/window — 21x faster
-npx lightpipe receive --out ./in  # write the finished file straight to disk
-npx lightpipe serve                # just serve; choose a mode in the browser
-npx lightpipe --host 0.0.0.0       # expose on the LAN; prints the LAN URL + a QR
+npx lightpipe send report.pdf       # serve, open a browser, START BROADCASTING
+npx lightpipe send --text "hi"      # a literal string, sent as markdown
+cat notes.md | npx lightpipe send   # stdin
+npx lightpipe receive camera        # capture from the webcam (the default)
+npx lightpipe receive screen        # capture a screen/window — 21x faster
+npx lightpipe receive --out ./in    # write the finished file straight to disk
+npx lightpipe serve                 # just serve; choose a mode in the browser
+npx lightpipe --host 0.0.0.0        # expose on the LAN; prints the LAN URL + a QR
 ```
 
 ## What is automatic and what is not
@@ -40,16 +40,15 @@ app's measured figures: **2.65 MB/s** on the screen path against **125.8 KB/s**
 through a camera. If you already reach the sending machine over VNC/RDP, capture
 the window instead of pointing a phone at a monitor.
 
-## Which device does which job
+## No certificates, ever
 
-The **desktop is the sender** — it only renders frames, so it needs no camera,
-and `http://localhost` is already a secure context. The default costs nothing
-and solves this case completely.
+`http://localhost` is already a secure context, so a desktop can **send or
+receive** — camera or screen — with no TLS at all. A phone receives from the
+public HTTPS site. lightpipe therefore generates nothing, installs nothing, and
+never writes a private key anywhere.
 
-The **phone is the receiver** — it needs a camera, and a browser only hands the
-camera to a *secure context*. `http://<lan-ip>` is not one. So either the phone
-opens the public HTTPS site (needs internet once, then it is cached), or you run
-`--https` here and teach the phone to trust the certificate.
+`--https` exists only to serve a certificate you already have, and errors if you
+do not pass both `--cert` and `--key`.
 
 ## `receive --out <dir>`
 
@@ -63,19 +62,9 @@ actual integrity check.
 
 ## `--https`
 
-Generates a **local certificate authority** and a leaf it signs, user-level, in
-`~/.config/lightpipe/` (`ca.key` is `0600` in a `0700` directory). No sudo, no
-system trust store, no OpenSSL, no network. The leaf covers `localhost`,
-`127.0.0.1`, `::1` and every current LAN IPv4; if the machine's address changes
-the leaf is regenerated automatically from the same CA, so the phone does not
-have to be re-taught. A tiny plain-HTTP listener serves `GET /ca.crt` (a phone
-cannot fetch a CA over TLS it does not yet trust) and the terminal prints a QR
-for it.
-
-**The tradeoff, plainly:** installing that CA on a device means anything holding
-`~/.config/lightpipe/ca.key` can mint a certificate that device will trust for
-any site. Remove it from the phone when you are done — the terminal prints how.
-`--cert` / `--key` bypass all of this.
+Bring your own: `lightpipe --https --cert ./cert.pem --key ./key.pem`. Nothing
+is generated, no CA is created, and no key is written to disk. Without both
+flags it fails with a message saying so.
 
 ## Options
 
@@ -88,9 +77,8 @@ any site. Remove it from the phone when you are done — the terminal prints how
 | `--name` / `--type` | override the payload's name / content type |
 | `-p, --port <n>` | port to listen on (default `8787`) |
 | `-H, --host <addr>` | address to bind; `0.0.0.0` exposes it on the LAN |
-| `--https` | serve over TLS |
-| `--cert` / `--key` | bring your own certificate |
-| `--ca-port <n>` | plain-HTTP port serving `/ca.crt` (default port+1) |
+| `--https` | serve over TLS with `--cert`/`--key` (both required) |
+| `--cert` / `--key` | the certificate and key to serve |
 | `-o, --open` / `--no-open` | open, or do not open, a browser |
 | `--no-qr` | do not print the terminal QR code |
 | `--no-isolation` | drop the COOP/COEP headers |

@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
-import http from "node:http";
 import { createRequire } from "node:module";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -10,7 +9,6 @@ import { parseArgs } from "node:util";
 import { createServer } from "./server.js";
 import { contentType } from "./mime.js";
 import { isLoopback, lanAddresses, primaryLanAddress, urlHost } from "./net.js";
-import { ensureCert, requiredNames } from "./tls.js";
 
 const require_ = createRequire(import.meta.url);
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -33,14 +31,12 @@ const OPTIONS = {
   https: { type: "boolean", default: false },
   cert: { type: "string" },
   key: { type: "string" },
-  "ca-port": { type: "string" },
   open: { type: "boolean", short: "o", default: false },
   "no-open": { type: "boolean", default: false },
   qr: { type: "boolean", default: true },
   "no-qr": { type: "boolean", default: false },
   isolation: { type: "boolean", default: true },
   "no-isolation": { type: "boolean", default: false },
-  "regenerate-cert": { type: "boolean", default: false },
   quiet: { type: "boolean", short: "q", default: false },
   help: { type: "boolean", short: "h", default: false },
   version: { type: "boolean", short: "v", default: false },
@@ -60,9 +56,9 @@ const HELP = String.raw`
     lightpipe serve                just serve the app; pick a mode in the browser
     lightpipe                      same as serve
 
-  The desktop is normally the SENDER: it only draws frames, needs no camera, and
-  http://localhost is already a secure context. The phone is the RECEIVER — it
-  needs a camera, so it needs HTTPS. See --https below and docs/cli.md.
+  http://localhost is already a secure context, so a desktop can send OR receive
+  (camera or screen) with no certificate at all. A phone receives from the public
+  HTTPS site. Nothing here needs TLS.
 
   OPTIONS
         --text <s>        send this string instead of a file
@@ -72,15 +68,13 @@ const HELP = String.raw`
         --type <mime>     override the payload's content type
     -p, --port <n>        port to listen on                 (default 8787)
     -H, --host <addr>     address to bind; 0.0.0.0 for LAN  (default 127.0.0.1)
-        --https           serve over TLS (needed for a CAMERA on another device)
-        --cert <file>     use this certificate instead of a generated one
+        --https           serve over TLS using --cert / --key (both required)
+        --cert <file>     certificate to serve
         --key <file>      private key for --cert
-        --ca-port <n>     plain-HTTP port that serves /ca.crt   (default port+1)
     -o, --open            open a browser (implied by send / receive)
         --no-open         do not open a browser; just print the URL
         --no-qr           do not print the terminal QR code
         --no-isolation    drop the COOP/COEP cross-origin-isolation headers
-        --regenerate-cert throw away the stored certificate and make a new one
     -q, --quiet           no per-request logging
     -h, --help            this text
     -v, --version         print the version
@@ -105,20 +99,14 @@ const HELP = String.raw`
     window directly with "lightpipe receive screen" instead of pointing a phone
     at a monitor.
 
-  --https AND THE PRICE OF IT
-    On first use a LOCAL CERTIFICATE AUTHORITY is generated and stored, user-
-    level, in ~/.config/lightpipe/ (ca.crt, ca.key mode 0600). Nothing is
-    installed system-wide and nothing needs sudo. The server then also runs a
-    tiny plain-HTTP listener serving GET /ca.crt so a phone can fetch it — a
-    phone cannot fetch a CA over a TLS connection it does not yet trust.
+  --https IS BRING-YOUR-OWN-CERTIFICATE
+    lightpipe does not generate certificates and never writes a private key
+    anywhere. --https serves the --cert / --key you already have, and errors if
+    you do not supply them.
 
-    Installing that CA on a device is a real security decision: from then on,
-    ANYTHING holding ~/.config/lightpipe/ca.key can mint a certificate that
-    device will trust for ANY site. The key never leaves this machine, but if
-    this machine is compromised, so is the trust you granted. Remove the CA from
-    the phone when you are done — the terminal prints how.
-
-    --cert / --key bypass all of this and use whatever you already have.
+    You almost certainly do not need it. Every real path is already a secure
+    context: a desktop sender or receiver on http://localhost, and a phone on
+    the public HTTPS site.
 
   Nothing here talks to the network. The app, including the WebAssembly core,
   is served from files inside this package.
@@ -209,24 +197,27 @@ export async function main(argv) {
   const isolate = a.isolation && !a["no-isolation"];
   const token = crypto.randomBytes(24).toString("hex");
 
-  // --- TLS -----------------------------------------------------------------
+  // --- TLS: bring your own, or none. Nothing is ever generated. ----------
   let tls = null;
-  let certInfo = null;
-  if (a.cert || a.key) {
+  let certPath = null;
+  if (a.https || a.cert || a.key) {
     if (!a.cert || !a.key) {
-      console.error("lightpipe: --cert and --key must be given together");
+      console.error(
+        "lightpipe: --https serves a certificate you supply — pass both --cert and --key.\n" +
+          "  It does not generate one, and never writes a private key anywhere.\n" +
+          "  You probably do not need TLS at all: http://localhost is already a secure\n" +
+          "  context, so a desktop can send or receive there, and a phone should use the\n" +
+          "  public HTTPS site.",
+      );
       return 2;
     }
-    tls = { cert: readFileSync(a.cert), key: readFileSync(a.key) };
-    certInfo = { source: "provided", certPath: resolve(a.cert) };
-  } else if (a.https) {
     try {
-      certInfo = { source: "local-ca", ...ensureCert(requiredNames(hostGiven ? host : null), { force: a["regenerate-cert"] }) };
+      tls = { cert: readFileSync(a.cert), key: readFileSync(a.key) };
     } catch (e) {
-      console.error(`lightpipe: could not create a certificate: ${e.message}`);
+      console.error(`lightpipe: could not read the certificate or key: ${e.message}`);
       return 1;
     }
-    tls = { cert: certInfo.cert, key: certInfo.key };
+    certPath = resolve(a.cert);
   }
 
   // --- listen --------------------------------------------------------------
@@ -246,7 +237,7 @@ export async function main(argv) {
       console.log(
         `\n  RECEIVED  ${r.path}\n            ${r.bytes.toLocaleString()} B · code ${r.code || "??????"} — compare it with the sending screen (ADR-0005)\n            sha256 ${r.sha256}\n`,
       );
-      if (a.once) shutdown(server, caServer, 0);
+      if (a.once) shutdown(server, 0);
     },
   });
 
@@ -266,38 +257,7 @@ export async function main(argv) {
   const localUrl = `${scheme}://${isLoopback(host) ? host : "localhost"}:${actual.port}/`;
   const lanUrl = !isLoopback(host) && lan ? `${scheme}://${urlHost(host, lan)}:${actual.port}/` : null;
 
-  // --- the CA bootstrap listener (plain HTTP, /ca.crt and nothing else) ----
-  let caServer = null;
-  let caUrl = null;
-  if (certInfo?.source === "local-ca") {
-    const caPort = a["ca-port"] !== undefined ? Number(a["ca-port"]) : actual.port + 1;
-    caServer = http.createServer((req, res) => {
-      if (req.method === "GET" && (req.url === "/ca.crt" || req.url === "/")) {
-        res.writeHead(200, {
-          // The content type is what makes a phone offer to install it.
-          "content-type": "application/x-x509-ca-cert",
-          "content-disposition": 'attachment; filename="lightpipe-ca.crt"',
-          "cache-control": "no-store",
-        });
-        res.end(certInfo.caPem);
-        if (!a.quiet) console.log(`  200 GET /ca.crt (the CA was downloaded — remember it is a real trust decision)`);
-        return;
-      }
-      res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-      res.end("this listener serves /ca.crt and nothing else\n");
-    });
-    await new Promise((ok) => {
-      caServer.once("error", (e) => {
-        console.error(`  (could not open the /ca.crt listener on port ${caPort}: ${e.message} — use --ca-port)`);
-        caServer = null;
-        ok();
-      });
-      caServer.listen(caPort, host, ok);
-    });
-    if (caServer) caUrl = `http://${urlHost(host, lan) === "localhost" && !isLoopback(host) ? lan : isLoopback(host) ? host : urlHost(host, lan)}:${caServer.address().port}/ca.crt`;
-  }
-
-  banner({ command, source, localUrl, lanUrl, caUrl, host, lan, tls, certInfo, isolate, qr: a.qr && !a["no-qr"], payload, saveDir });
+  banner({ command, source, localUrl, lanUrl, host, lan, tls, certPath, isolate, qr: a.qr && !a["no-qr"], payload, saveDir });
 
   const wantOpen = !a["no-open"] && (a.open || command !== "serve");
   if (wantOpen) openBrowser(localUrl);
@@ -305,19 +265,14 @@ export async function main(argv) {
 
   const stop = () => {
     console.log("\nlightpipe: stopped.");
-    shutdown(server, caServer, 0);
+    shutdown(server, 0);
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   return new Promise(() => {}); // foreground until Ctrl-C
 }
 
-function shutdown(server, caServer, code) {
-  try {
-    caServer?.close();
-  } catch {
-    /* already down */
-  }
+function shutdown(server, code) {
   server.close(() => process.exit(code));
   setTimeout(() => process.exit(code), 400).unref();
 }
@@ -394,7 +349,7 @@ function reportStatus(s, payload) {
   }
 }
 
-function banner({ command, source, localUrl, lanUrl, caUrl, host, lan, tls, certInfo, isolate, qr, payload, saveDir }) {
+function banner({ command, source, localUrl, lanUrl, host, lan, tls, certPath, isolate, qr, payload, saveDir }) {
   const qrcode = () => require_("qrcode-terminal");
   console.log(`\n  lightpipe v${pkg.version} — ${command}, served from this machine, offline.\n`);
   if (payload) console.log(`  payload                 ${payload.name} · ${bytesish(payload.size)}${payload.mime ? ` · ${payload.mime}` : ""}`);
@@ -405,71 +360,27 @@ function banner({ command, source, localUrl, lanUrl, caUrl, host, lan, tls, cert
   else if (isLoopback(host)) console.log(`  other devices           not reachable — bind the LAN with --host 0.0.0.0`);
   else if (!lan) console.log(`  other devices           no LAN address found on this machine`);
   console.log(`  cross-origin isolation  ${isolate ? "on (COOP: same-origin, COEP: require-corp)" : "off"}`);
-  if (tls) {
-    const s = certInfo.source;
-    console.log(`  certificate             ${s === "provided" ? "yours" : certInfo.reused ? "reused" : "generated: " + certInfo.reason} — ${certInfo.certPath}`);
-    if (s === "local-ca") console.log(`  local CA                ${certInfo.caPath}   (private key ${certInfo.caKeyPath}, 0600)`);
-    if (caUrl) console.log(`  CA download, plain http ${caUrl}`);
-  }
+  if (tls) console.log(`  certificate             yours — ${certPath}`);
   if (saveDir && !isLoopback(host)) {
     console.log(
       `\n  WARNING: --out is on AND this is bound to ${host}. Anything on this network\n  that can reach the page could ask this process to write a file into\n  ${saveDir}. A per-run token gates it, but the page carrying that token is\n  served to whoever asks.`,
     );
   }
 
-  if (qr && caUrl) {
-    console.log(`\n  1. SCAN THIS FIRST on the phone — it downloads the certificate authority:\n`);
-    qrcode().generate(caUrl, { small: true });
-    console.log(`     ${caUrl}\n`);
-  }
   if (qr && lanUrl) {
-    console.log(`${caUrl ? "  2. THEN scan this to open the app:" : "  Scan this on the phone to open the app:"}\n`);
+    console.log(`  Scan this to open the app on another machine:\n`);
     qrcode().generate(lanUrl, { small: true });
     console.log(`     ${lanUrl}\n`);
   }
-  if (certInfo?.source === "local-ca") console.log(trustChore(certInfo, lanUrl ?? localUrl, caUrl));
-  else if (!tls && !isLoopback(host)) console.log(cameraNote(lanUrl));
+  if (!tls && !isLoopback(host)) console.log(cameraNote(lanUrl));
 }
 
 const cameraNote = (lanUrl) => `
-  NOTE — a phone opening ${lanUrl ?? "an http:// LAN URL"} can RENDER frames but
-  cannot use its CAMERA: getUserMedia needs a secure context, and plain http on
-  a LAN address is not one. That is fine when the phone is the SENDER. If the
-  phone must RECEIVE, either open the public https:// site (needs internet once)
-  or restart with --https and do the certificate chore.
-`;
-
-const trustChore = (certInfo, appUrl, caUrl) => `
-  TRUSTING THE CERTIFICATE ON A PHONE IS A REAL CHORE, AND A REAL DECISION.
-
-  What you are about to do: install this machine's local CA on the phone. From
-  then on, anything holding
-      ${certInfo.caKeyPath}
-  can mint a certificate that phone will trust for ANY site, not just this one.
-  The key is 0600 and never leaves this machine — but that is the whole of the
-  protection. Remove the CA from the phone when you are finished.
-
-  iOS / iPadOS — three steps, and the third is the one everybody misses:
-    1. Open ${caUrl ?? "the /ca.crt URL"} in Safari
-       -> Settings shows "Profile Downloaded"
-    2. Settings > General > VPN & Device Management > install the profile
-    3. Settings > General > About > Certificate Trust Settings > switch it ON
-       (step 3 is where it becomes trusted; step 2 alone is NOT enough)
-    Remove it later: Settings > General > VPN & Device Management > Remove.
-
-  Android 7+ — a user-installed CA is trusted by Chrome for browsing (apps
-  ignore it since Android 7, which does not matter here):
-    Download ${caUrl ?? "the /ca.crt URL"}, then
-    Settings > Security > Encryption & credentials > Install a certificate >
-    CA certificate  (accept the warning; the device needs a screen lock)
-    Remove it later: the same screen > User credentials / Trusted credentials.
-
-  Then open ${appUrl} on the phone. If this machine's LAN address changes
-  (new Wi-Fi, new DHCP lease) the leaf certificate is regenerated automatically
-  from the SAME CA, so you do NOT repeat the phone steps.
-
-  Honest alternative: keep the phone on the public HTTPS site as the receiver
-  (it needs internet once, then it is cached) and use this CLI for the desktop.
+  NOTE — another machine opening ${lanUrl ?? "an http:// LAN URL"} can RENDER
+  frames but cannot use its CAMERA or capture its SCREEN: those need a secure
+  context, and plain http on a LAN address is not one. That is fine when the
+  far machine is the SENDER. If it must RECEIVE, run lightpipe on that machine
+  and use its own http://localhost, or open the public https:// site there.
 `;
 
 function openBrowser(url) {
