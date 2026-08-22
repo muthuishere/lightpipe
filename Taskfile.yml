@@ -113,6 +113,26 @@ tasks:
     cmds:
       - cd app && npm ci && BASE_PATH=/lightpipe/ npm run build
 
+  cli:build:
+    desc: 'Build the offline npm CLI (base-/ app build baked into cli/public)'
+    deps: [wasm:build]
+    cmds:
+      - npm --prefix cli install
+      - npm --prefix cli run build
+
+  cli:pack:
+    desc: 'Pack the CLI tarball and show what is in it'
+    deps: [cli:build]
+    cmds:
+      - npm --prefix cli pack
+      - tar tzf cli/lightpipe-*.tgz
+
+  cli:run:
+    desc: 'Serve the app locally from the CLI (offline, no internet needed)'
+    deps: [cli:build]
+    cmds:
+      - node cli/bin/lightpipe.js {{.CLI_ARGS}}
+
   adr:
     desc: List architecture decisions
     cmds:

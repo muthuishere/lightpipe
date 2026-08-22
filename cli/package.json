@@ -1,0 +1,42 @@
+{
+  "name": "lightpipe",
+  "version": "0.1.0",
+  "description": "Move a file between two devices using nothing but light \u2014 a screen animates coloured cells, a camera reads them. Serves the whole app locally; no internet, ever.",
+  "keywords": [
+    "lightpipe",
+    "air-gap",
+    "offline",
+    "file-transfer",
+    "optical",
+    "screen-to-camera",
+    "wasm"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "bin": {
+    "lightpipe": "bin/lightpipe.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "public/",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build-app.mjs",
+    "prepack": "node scripts/build-app.mjs",
+    "start": "node bin/lightpipe.js"
+  },
+  "dependencies": {
+    "node-forge": "^1.4.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/muthuishere/lightpipe.git"
+  },
+  "homepage": "https://github.com/muthuishere/lightpipe#readme"
+}
