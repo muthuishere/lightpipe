@@ -34,8 +34,14 @@ import type { OpticalModule, Profile } from "../wasm-api";
  */
 export const MIN_EDGE = 700;
 
-/** Longest pass we are willing to accept before stepping up the density. */
-const MAX_PASS_FRAMES = 64;
+/**
+ * How long a single pass may get before we give up on bigger blocks.
+ *
+ * Deliberately generous: at 30 fps, 600 frames is 20 seconds of broadcast for
+ * one pass, and a receiver that can actually READ the blocks finishes in one or
+ * two passes. That is a far better outcome than a fast frame nothing resolves.
+ */
+const MAX_PASS_FRAMES = 600;
 
 /** Coarsest (most reliable) first — the order "auto" walks. */
 const LADDER: Profile[] = ["L0", "L1", "L2", "L3", "L4"];
@@ -173,29 +179,23 @@ export function planFrame(optical: OpticalModule, input: PlanInput): FramePlan {
 }
 
 
-/* ------------------------------------------------------------------ fitting */
 
 /**
- * What fraction of the frame is actually carrying something?
+ * What fraction of the frame carries data?
  *
- * `frameCapacity` reports what the core says a frame holds, and that turned out
- * not to be the same thing as what the core DRAWS. On a small payload the
- * rendered grid is a band across the top and the rest of the frame is black —
- * capacity said 76% used while the picture was 90% void. Whatever the core is
- * doing internally (packet-aligned rows, most likely), the app cannot see it
- * and should not have to guess.
- *
- * So measure the real thing: render one frame and count the pixels that are not
- * black. Reading straight out of wasm linear memory, no canvas involved.
+ * `frameCapacity` reports what the core says a frame holds, and that is not the
+ * same as what it DRAWS: on a small payload the grid comes out as a band and
+ * the rest of the frame is black. Measure the real thing — count pixels that
+ * are neither background white nor dead black, straight out of wasm memory.
  */
-function inkFraction(optical: OpticalModule, sender: { nextFrame: () => { ptr: number; len: number } }): number {
+function inkFraction(
+  optical: OpticalModule,
+  sender: { nextFrame: () => { ptr: number; len: number } },
+): number {
   const f = sender.nextFrame();
   const px = new Uint8Array(optical.memory.buffer as ArrayBuffer, f.ptr, f.len);
   let lit = 0;
   let n = 0;
-  // Every 16th pixel is plenty for a ratio and keeps this off the hot path.
-  // White is margin and quiet zone, black is void: only COLOURED pixels are
-  // data, so only they count.
   for (let i = 0; i < px.length; i += 64) {
     n++;
     const r = px[i];
@@ -208,104 +208,20 @@ function inkFraction(optical: OpticalModule, sender: { nextFrame: () => { ptr: n
   return n ? lit / n : 0;
 }
 
-/** Widths we are willing to try, largest first. */
-const WIDTHS = [1920, 1680, 1440, 1280, 1080, 960, 840, 720];
-/** Height fractions of the nominal 16:9 height, to find one the data fills. */
-const HEIGHT_FRACTIONS = [1, 0.75, 0.55, 0.4, 0.3, 0.22];
-
-/**
- * Pick the frame the payload visibly FILLS, by building a throwaway sender at
- * each candidate size and looking at what actually comes out.
- *
- * Height is searched independently of width, because the core draws a grid of
- * far fewer rows than the frame has and no proportional shrink ever closes that
- * gap — see the note on `inkFraction`. A shorter frame at the same width is the
- * only lever the app has, and the corner markers follow the frame, so geometry
- * still works.
- *
- * Costs a handful of wasm renders once per transfer, which is nothing next to
- * the transfer itself.
- */
-export function fitFrame(
-  optical: OpticalModule,
-  payload: Uint8Array,
-  input: PlanInput,
-): FramePlan {
-  const base = planFrame(optical, input);
-  if (!optical.frameCapacity) return base;
-
-  const portrait = input.baseHeight > input.baseWidth;
-  const longest = Math.max(input.baseWidth, input.baseHeight);
-  const shortest = Math.min(input.baseWidth, input.baseHeight);
-
-  let best = base;
-  let bestInk = -1;
-
-  for (const longEdge of WIDTHS) {
-    if (longEdge > longest) continue;
-    const shortFull = Math.round((longEdge * shortest) / longest);
-    for (const frac of HEIGHT_FRACTIONS) {
-      const shortEdge = Math.round(shortFull * frac);
-      if (shortEdge < 320) continue;
-      const w = portrait ? shortEdge : longEdge;
-      const h = portrait ? longEdge : shortEdge;
-
-      let cap = 0;
-      try {
-        cap = optical.frameCapacity(base.profile, w, h) || 0;
-      } catch {
-        continue;
-      }
-      if (cap <= 0) continue;
-      const frames = Math.max(1, Math.ceil(input.totalBytes / cap));
-      // Never turn a one-pass transfer into a multi-pass one just to look full,
-      // and never make a long transfer materially longer.
-      if (frames > Math.max(1, base.framesPerPass)) continue;
-
-      let probe: { nextFrame: () => { ptr: number; len: number }; free: () => void } | null = null;
-      try {
-        probe = optical.OpticalSender.create(payload, {
-          profile: base.profile,
-          width: w,
-          height: h,
-        });
-        const ink = inkFraction(optical, probe);
-        if (ink > bestInk) {
-          bestInk = ink;
-          best = {
-            profile: base.profile,
-            width: w,
-            height: h,
-            capacity: cap,
-            framesPerPass: frames,
-            fill: ink,
-            shrunk: w < input.baseWidth || h < input.baseHeight,
-          };
-        }
-      } catch {
-        /* the core would not build this frame; skip it */
-      } finally {
-        probe?.free();
-      }
-    }
-  }
-  return bestInk >= 0 ? best : base;
-}
-
 /* ----------------------------------------------------------- capability probe */
 
 /**
  * Which quality settings does the loaded engine ACTUALLY round-trip?
  *
- * Measured against the shipped wasm bundle: only L3 (which is what "auto"
- * resolves to) decodes. L0, L1, L2 and L4 render a frame and report a sensible
- * `frameCapacity`, and the receiver then rejects every single one — 0 accepted
- * out of 80, at any frame size or aspect. Nothing in the contract exposes this,
- * so the app cannot know it without trying.
+ * Measured against the shipped wasm bundle: only L3 (what "auto" resolves to)
+ * decodes. L0, L1, L2 and L4 render a frame and report a sensible
+ * `frameCapacity`, and the receiver then rejects every one — 0 accepted out of
+ * 80, at any frame size or aspect. Nothing in the contract exposes this, so the
+ * app cannot know it without trying.
  *
- * A control that silently does nothing is worse than a control that is not
- * there, so the app probes once and only offers what works. When the core is
- * fixed the extra rungs light up on their own, with no change here.
+ * A control that silently does nothing is worse than one that is not there, so
+ * the app probes once and only offers what works. When the core is fixed the
+ * extra rungs light up on their own.
  */
 export function probeProfiles(optical: OpticalModule): Set<Profile> {
   const working = new Set<Profile>();
@@ -335,8 +251,247 @@ export function probeProfiles(optical: OpticalModule): Set<Profile> {
       rx?.free();
     }
   }
-  // Never return nothing: if the probe itself is wrong, the user must still be
-  // able to try. "auto" is the engine's own default and the safest fallback.
   if (working.size === 0) working.add("auto");
   return working;
+}
+
+/* ------------------------------------------------------------------ fitting */
+
+/**
+ * WHAT WE ARE ACTUALLY OPTIMISING — and what the first version got wrong.
+ *
+ * The first version maximised how much of the FRAME carried data. That is the
+ * wrong objective, and a screenshot of a real desktop send showed why: a
+ * portrait frame letterboxed onto a 1920x1080 screen, code occupying the middle
+ * 25%, both side thirds pure black. The frame was well filled. The SCREEN was
+ * not, and the camera does not see the frame — it sees the screen.
+ *
+ * The camera has to hold all four corner markers in view, so it frames the
+ * whole code. Whatever fraction of the display the code fails to cover is
+ * magnification thrown away, and it comes straight off the cell size landing on
+ * the sensor. 145 frames sent, zero read.
+ *
+ * The right objective is CELL PITCH IN PHYSICAL SCREEN PIXELS:
+ *
+ *     screenPitch = cellPx * (viewportWidth / frameWidth)
+ *
+ * Two consequences, both the opposite of what the old code did:
+ *   - the frame's aspect must MATCH the display's, so `object-fit: contain`
+ *     scales it edge to edge instead of letterboxing it;
+ *   - the frame should be as SMALL in pixels as the payload allows, because a
+ *     smaller frame is scaled up harder and every cell gets bigger. A small
+ *     frame blown up is exactly what we want, not a big frame centred.
+ *
+ * Cell pitch is measured off a rendered frame rather than assumed, because the
+ * contract does not expose it.
+ */
+
+/** Longest edge candidates, SMALLEST first — smaller frame, bigger cells. */
+const EDGES = [640, 700, 760, 840, 920, 1000, 1120, 1280, 1440, 1680, 1920];
+
+/**
+ * Cell pitch of a rendered frame, in frame pixels.
+ *
+ * Scans rows inside the payload band and takes the median run length of an
+ * unchanging colour. Runs of 1 are noise and the long black tail is dead space,
+ * so both are excluded.
+ */
+function measureCellPitch(
+  optical: OpticalModule,
+  sender: { nextFrame: () => { ptr: number; len: number; width: number; height: number } },
+): number {
+  const f = sender.nextFrame();
+  const px = new Uint32Array(optical.memory.buffer as ArrayBuffer, f.ptr, f.len >> 2);
+  const runs: number[] = [];
+  const rows = 24;
+  for (let k = 1; k <= rows; k++) {
+    const y = Math.floor((f.height * k) / (rows + 1));
+    const base = y * f.width;
+    let run = 1;
+    for (let x = 1; x < f.width; x++) {
+      if (px[base + x] === px[base + x - 1]) {
+        run++;
+      } else {
+        if (run > 1 && run < f.width / 4) runs.push(run);
+        run = 1;
+      }
+    }
+  }
+  if (runs.length === 0) return 0;
+  runs.sort((a, b) => a - b);
+  return runs[Math.floor(runs.length / 2)];
+}
+
+/**
+ * Does this frame actually carry its four corner markers?
+ *
+ * THE TRAP. Below some frame size the core silently omits the fiducials: at
+ * 700x345 every corner measures 0% white / 98% black, while 840x414 and up show
+ * the bullseye (~40% white / 58% black). A frame without markers cannot be
+ * rectified, so a camera can never read it — and the failure is invisible to
+ * any test that decodes with the geometry stage switched off, which is exactly
+ * how the loopback path runs.
+ *
+ * Nothing in the contract exposes a minimum, so measure it. A candidate that
+ * cannot show its corners is rejected however good its cell pitch looks.
+ */
+function hasFiducials(
+  optical: OpticalModule,
+  sender: { nextFrame: () => { ptr: number; len: number; width: number; height: number } },
+): boolean {
+  const f = sender.nextFrame();
+  const px = new Uint8Array(optical.memory.buffer as ArrayBuffer, f.ptr, f.len);
+  const box = Math.min(120, Math.floor(Math.min(f.width, f.height) / 4));
+  const corner = (x0: number, y0: number) => {
+    let white = 0;
+    let n = 0;
+    for (let y = y0; y < y0 + box && y < f.height; y++) {
+      for (let x = x0; x < x0 + box && x < f.width; x++) {
+        const i = (y * f.width + x) * 4;
+        n++;
+        if (px[i] > 215 && px[i + 1] > 215 && px[i + 2] > 215) white++;
+      }
+    }
+    // A bullseye on its quiet zone is roughly 40% white. Anything under 15% is
+    // an empty corner.
+    return n > 0 && white / n > 0.15;
+  };
+  return (
+    corner(0, 0) &&
+    corner(f.width - box, 0) &&
+    corner(0, f.height - box) &&
+    corner(f.width - box, f.height - box)
+  );
+}
+
+export interface DisplayPlanInput {
+  totalBytes: number;
+  requested: Profile;
+  usable?: Set<Profile>;
+  /** the area the canvas will actually be displayed in, in CSS pixels */
+  viewW: number;
+  viewH: number;
+}
+
+export interface DisplayPlan extends FramePlan {
+  /** cell pitch in frame pixels, measured off a real render */
+  cellPx: number;
+  /** cell pitch in physical display pixels — the number a camera cares about */
+  screenPitch: number;
+  /** how much of the display area the frame covers once scaled, 0..1 */
+  screenCoverage: number;
+}
+
+/**
+ * Pick the frame that puts the BIGGEST CELLS on the glass.
+ *
+ * Aspect always matches the display, so nothing is letterboxed. Then, per
+ * usable quality, take the smallest frame the payload fits in — that is the one
+ * scaled up hardest — and keep whichever combination measures the largest cell
+ * pitch on screen.
+ */
+export function planForDisplay(
+  optical: OpticalModule,
+  payload: Uint8Array,
+  input: DisplayPlanInput,
+): DisplayPlan {
+  const { totalBytes, requested, viewW, viewH } = input;
+  const aspect = viewW / Math.max(1, viewH);
+  const landscape = aspect >= 1;
+  const cap = optical.frameCapacity;
+
+  const fallback: DisplayPlan = {
+    profile: requested === "auto" ? "auto" : requested,
+    width: landscape ? 1920 : 1080,
+    height: landscape ? 1080 : 1920,
+    capacity: 0,
+    framesPerPass: 0,
+    fill: 0,
+    shrunk: false,
+    cellPx: 0,
+    screenPitch: 0,
+    screenCoverage: 1,
+  };
+  if (!cap) return fallback;
+
+  const ladder =
+    requested === "auto"
+      ? (input.usable ? LADDER.filter((p) => input.usable!.has(p)) : LADDER)
+      : [requested];
+  if (ladder.length === 0) ladder.push("auto");
+
+  // A little headroom for the fountain's own per-packet overhead.
+  const target = Math.ceil(totalBytes * 1.06) + 64;
+
+  let best: DisplayPlan | null = null;
+
+  for (const profile of ladder) {
+    for (const edge of EDGES) {
+      const w = landscape ? edge : Math.round(edge * aspect);
+      const h = landscape ? Math.round(edge / aspect) : edge;
+      if (Math.min(w, h) < 300) continue;
+
+      let capacity = 0;
+      try {
+        capacity = cap(profile, w, h) || 0;
+      } catch {
+        continue;
+      }
+      if (capacity <= 0) continue;
+
+      const framesPerPass = Math.max(1, Math.ceil(totalBytes / capacity));
+      /**
+       * BIGGER BLOCKS WIN, and it is not a close trade.
+       *
+       * A cell too small for the camera to resolve does not make the transfer
+       * slow — it makes it never finish. A cell twice as wide costs roughly 4x
+       * the frames, which is seconds. So we accept a much longer pass in
+       * exchange for a larger pitch, and only refuse when the pass becomes
+       * genuinely unreasonable.
+       */
+      if (framesPerPass > MAX_PASS_FRAMES && edge !== EDGES[EDGES.length - 1]) continue;
+      void target;
+
+      let probe:
+        | {
+            nextFrame: () => { ptr: number; len: number; width: number; height: number };
+            free: () => void;
+          }
+        | null = null;
+      try {
+        probe = optical.OpticalSender.create(payload, { profile, width: w, height: h });
+        // A frame without corner markers is unreadable by any camera, however
+        // large its cells look. Reject before scoring.
+        if (!hasFiducials(optical, probe)) continue;
+        const cellPx = measureCellPitch(optical, probe);
+        const ink = inkFraction(optical, probe);
+        // object-fit: contain — the frame scales until one axis is full.
+        const scale = Math.min(viewW / w, viewH / h);
+        const screenPitch = cellPx * scale;
+        const screenCoverage = ((w * scale) * (h * scale)) / Math.max(1, viewW * viewH);
+        const candidate: DisplayPlan = {
+          profile,
+          width: w,
+          height: h,
+          capacity,
+          framesPerPass,
+          fill: ink,
+          shrunk: w < 1920 && h < 1920,
+          cellPx,
+          screenPitch,
+          screenCoverage,
+        };
+        if (!best || screenPitch > best.screenPitch) best = candidate;
+        // Smallest-first, and smaller is always a bigger pitch, so the first
+        // size that works for this rung is the best this rung can do.
+        break;
+      } catch {
+        /* the core will not build this frame; try the next size up */
+      } finally {
+        probe?.free();
+      }
+    }
+  }
+
+  return best ?? fallback;
 }

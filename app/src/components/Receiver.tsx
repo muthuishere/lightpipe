@@ -425,32 +425,44 @@ export default function Receiver({ senderCanvasRef, senderActive }: ReceiverProp
         if (source === "loopback" && (preset.filter !== "none" || preset.windowed)) {
           const scratch = scratchRef.current ?? document.createElement("canvas");
           scratchRef.current = scratch;
-          scratch.width = preset.w;
-          scratch.height = preset.h;
+
+          // A camera sees the screen sitting INSIDE its frame with room around
+          // it, and the real core needs that margin to find the four corner
+          // markers. A full-screen grab has no such margin and needs none — it
+          // IS the frame.
+          const wantsMargin =
+            preset.windowed || (optical.implementation === "wasm" && !preset.screenLike);
+
+          // A windowed share is the source at ITS OWN resolution sitting inside
+          // a slightly larger desktop — not the source rescaled to 1920x1080.
+          // Resampling it would destroy the cells and test the wrong thing.
+          const srcW = (src as HTMLCanvasElement).width || preset.w;
+          const srcH = (src as HTMLCanvasElement).height || preset.h;
+          const inset = wantsMargin ? Math.round(srcW * 0.07) : 0;
+          if (preset.windowed) {
+            scratch.width = srcW + inset * 2;
+            scratch.height = srcH + inset * 2;
+          } else {
+            scratch.width = preset.w;
+            scratch.height = preset.h;
+          }
+
           const sctx = scratch.getContext("2d", { alpha: false });
           if (!sctx) return;
           // A pixel-perfect source must stay pixel-perfect: smoothing would
           // blur the cell edges we are about to threshold.
           sctx.imageSmoothingEnabled = !preset.screenLike;
-          // The real core finds four corner fiducials and solves a homography,
-          // so it needs the screen to sit INSIDE the frame with room around it,
-          // exactly as a hand-held camera would see it. The mock has no
-          // fiducial detection at all and needs an edge-to-edge grab, so the
-          // inset is only applied when the real bundle is loaded.
-          // A camera sees the screen sitting INSIDE its frame with room around
-          // it, and the real core needs that to find the four corner markers.
-          // A screen grab has no such margin and needs none — it is the frame.
-          const inset =
-            preset.windowed || (optical.implementation === "wasm" && !preset.screenLike)
-              ? Math.round(preset.w * 0.07)
-              : 0;
           sctx.filter = "none";
           sctx.fillStyle = "#101014";
-          sctx.fillRect(0, 0, preset.w, preset.h);
+          sctx.fillRect(0, 0, scratch.width, scratch.height);
           sctx.filter = preset.filter;
-          const iw = preset.w - inset * 2;
-          const ih = Math.round((iw * 9) / 16);
-          sctx.drawImage(src, inset, Math.round((preset.h - ih) / 2), iw, ih);
+          if (preset.windowed) {
+            sctx.drawImage(src, inset, inset, srcW, srcH);
+          } else {
+            const iw = preset.w - inset * 2;
+            const ih = Math.round((iw * preset.h) / preset.w);
+            sctx.drawImage(src, inset, Math.round((preset.h - ih) / 2), iw, ih);
+          }
           bitmap = await createImageBitmap(scratch);
         } else {
           bitmap = await createImageBitmap(src);

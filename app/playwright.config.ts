@@ -53,6 +53,17 @@ export default defineConfig({
         },
       },
     },
+    // The reported geometry bug was on a 1920x1080 desktop, and cell pitch in
+    // screen pixels scales with the display, so it is measured at that size.
+    {
+      name: "desktop-1080p",
+      testMatch: /geometry\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 1920, height: 1080 },
+        launchOptions: { args: MEDIA_ARGS },
+      },
+    },
     // Phone-sized viewports. The reported bug was mobile-only: the send view's
     // status sat below the fold in fullscreen, and on iOS there is no
     // Fullscreen API for a non-video element at all.

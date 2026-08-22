@@ -222,14 +222,16 @@ body.immersive-open {
   min-width: 0;
   padding: 6px;
 }
-/* Aspect-preserved and bounded by the space LEFT OVER after the strips, so a
-   viewport that happens to match the frame aspect costs the code a little area
-   instead of costing the user their status. */
+/* SCALED UP to fill the space left over after the strips — not drawn at its
+   native size and centred.
+   The frame is deliberately small in pixels so that this upscale makes the
+   cells physically large on the glass; `width/height: auto` capped by `max-*`
+   silently defeated that, leaving a 640x360 frame occupying 11% of a 1920x1080
+   display. `object-fit: contain` keeps the aspect, and the frame's aspect is
+   planned to match this box, so it fills edge to edge. */
 .stage.immersive canvas {
-  width: auto;
-  height: auto;
-  max-width: 100%;
-  max-height: 100%;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
 }
 

@@ -7,7 +7,7 @@ import { bytes, duration, int, rate } from "../lib/format";
 import { estimate, GOOD_BPS, POTATO_BPS } from "../lib/estimate";
 import { probeImage, reencode, swapExtension } from "../lib/image";
 import { isImage } from "../lib/envelope";
-import { fitFrame, planFrame, probeProfiles, type FramePlan } from "../lib/frame-plan";
+import { planForDisplay, probeProfiles, type DisplayPlan } from "../lib/frame-plan";
 
 type Phase = "idle" | "reading" | "ready" | "sending";
 type Input = "file" | "text";
@@ -30,26 +30,13 @@ type Input = "file" | "text";
  * (ADR-0016 would fix this if the handshake is ever wired). Until then: default
  * from this device, and let the person override.
  */
-type Shape = "auto" | "landscape" | "portrait" | "match";
+type Shape = "auto" | "landscape" | "portrait";
 
 const SHAPES: Array<{ id: Shape; label: string; caption: string }> = [
-  { id: "auto", label: "Auto — match this device", caption: "" },
-  { id: "landscape", label: "Landscape — laptop or desktop camera", caption: "1920 x 1080" },
-  { id: "portrait", label: "Portrait — phone held upright", caption: "1080 x 1920" },
-  { id: "match", label: "Fill this screen exactly", caption: "" },
+  { id: "auto", label: "Match this screen (recommended)", caption: "fills the display edge to edge" },
+  { id: "landscape", label: "Force landscape", caption: "1920 x 1080" },
+  { id: "portrait", label: "Force portrait", caption: "1080 x 1920" },
 ];
-
-/**
- * What "auto" resolves to: the shape of the screen doing the sending.
- *
- * Orientation alone, deliberately. An earlier version also treated any touch
- * device as portrait, which put a portrait frame on a phone held sideways —
- * letterboxing it into half the screen, which is exactly the waste the shape
- * control exists to avoid.
- */
-function deviceShape(): "landscape" | "portrait" {
-  return window.innerHeight > window.innerWidth ? "portrait" : "landscape";
-}
 
 interface Speed {
   id: Profile;
@@ -57,11 +44,16 @@ interface Speed {
   help: string;
 }
 
+/**
+ * ONE trade-off, in the user's words. "L0", "P8", "20 px cells" and "the potato
+ * rung" are our vocabulary, not theirs — the raw profile id stays available as
+ * a caption and a tooltip, but it never leads.
+ */
 const SPEEDS: Speed[] = [
   {
     id: "auto",
     label: "Auto — pick for me",
-    help: "A safe middle setting that works on most cameras.",
+    help: "Picks the most forgiving setting the payload can afford.",
   },
   {
     id: "L0",
@@ -69,11 +61,7 @@ const SPEEDS: Speed[] = [
     help: "Biggest blocks. Works on weak cameras, bad light and shaky hands.",
   },
   { id: "L1", label: "Reliable", help: "A good balance for a typical webcam." },
-  {
-    id: "L2",
-    label: "Balanced",
-    help: "Faster. Wants a decent camera and steady framing.",
-  },
+  { id: "L2", label: "Balanced", help: "Faster. Wants a decent camera and steady framing." },
   { id: "L3", label: "Fast", help: "For a good phone camera, well lit and held still." },
   {
     id: "L4",
@@ -81,15 +69,6 @@ const SPEEDS: Speed[] = [
     help: "Densest picture. A phone camera up close, or a screen capture.",
   },
 ];
-
-/** Cheap content hash of a frame, used only to detect when the stream repeats. */
-function frameHash(ptr: number, len: number): number {
-  const words = new Uint32Array(optical.memory.buffer as ArrayBuffer, ptr, len >> 2);
-  const step = Math.max(1, Math.floor(words.length / 4096));
-  let h = 0x811c9dc5;
-  for (let i = 0; i < words.length; i += step) h = (Math.imul(h ^ words[i], 0x01000193) >>> 0) + i;
-  return h >>> 0;
-}
 
 export interface SenderProps {
   canvasRef: React.MutableRefObject<HTMLCanvasElement | null>;
@@ -108,6 +87,12 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [profile, setProfile] = useState<Profile>("auto");
+  /**
+   * Auto means "the exact shape of the area this will be shown in". Forcing a
+   * shape that does not match the display letterboxes the code into a fraction
+   * of the screen, which is magnification thrown away before the camera even
+   * looks — the cause of a real desktop send that decoded nothing.
+   */
   const [shape, setShape] = useState<Shape>("auto");
   /**
    * Fullscreen is a CSS MODE, not an API call.
@@ -126,7 +111,7 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
   const [dragging, setDragging] = useState(false);
   const [still, setStill] = useState(false);
   const [framesPerPass, setFramesPerPass] = useState(0);
-  const [plan, setPlan] = useState<FramePlan | null>(null);
+  const [plan, setPlan] = useState<DisplayPlan | null>(null);
   const [testPattern, setTestPattern] = useState(false);
   // Which quality settings this engine actually round-trips. Probed once.
   const [usable, setUsable] = useState<Set<Profile> | null>(null);
@@ -150,6 +135,7 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
   const bytesRef = useRef<Uint8Array | null>(null);
   const rafRef = useRef(0);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
 
   const stopLoop = useCallback(() => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -170,6 +156,35 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
     const id = window.setTimeout(() => setUsable(probeProfiles(optical)), 0);
     return () => window.clearTimeout(id);
   }, []);
+
+  /**
+   * The frame is planned against the area it will be SHOWN in, so that area
+   * changing invalidates the plan. Entering fullscreen is the big one: a frame
+   * planned for a 1140 px windowed canvas, then blown up to 1920, was drawn for
+   * the wrong aspect and the wrong scale — the code ended up a fraction of the
+   * screen with tiny cells, which is the bug that stopped cameras decoding.
+   */
+  useEffect(() => {
+    if (phase !== "sending" || !bytesRef.current) return;
+    const id = window.setTimeout(() => replanAndRestart(), 60);
+    return () => window.clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [immersive]);
+
+  useEffect(() => {
+    if (phase !== "sending") return;
+    let t = 0;
+    const onResize = () => {
+      window.clearTimeout(t);
+      t = window.setTimeout(() => replanAndRestart(), 250);
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.clearTimeout(t);
+      window.removeEventListener("resize", onResize);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
 
   // Nothing scrolls behind the immersive view, and Escape always gets out.
   useEffect(() => {
@@ -319,17 +334,41 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
   }
 
   /**
-   * Build the sender against a frame the payload actually FILLS, falling back
-   * to the full frame if the core will not render the shrunken one.
+   * The area the code will actually be displayed in, in CSS pixels.
+   *
+   * NOT the frame, and not the whole window: the canvas sits between the two
+   * status strips, and that box is what the camera ends up looking at. Matching
+   * the frame's aspect to THIS is what stops the code being letterboxed into a
+   * fraction of the screen.
+   */
+  function viewArea() {
+    const wrap = wrapRef.current;
+    if (wrap && wrap.clientWidth > 40 && wrap.clientHeight > 40) {
+      return { w: wrap.clientWidth, h: wrap.clientHeight };
+    }
+    // Before the stage exists, predict the immersive layout: full viewport
+    // minus the two strips.
+    const w = window.innerWidth;
+    const h = Math.max(200, window.innerHeight - 140);
+    return { w, h };
+  }
+
+  /**
+   * Build the sender against the frame that puts the BIGGEST CELLS on the
+   * glass — matching the display's aspect so nothing is letterboxed, and as
+   * small in pixels as the payload allows so it is scaled up hardest.
    */
   function buildSender(payload: Uint8Array) {
-    const base = dims();
-    const p = fitFrame(optical, payload, {
+    const view = viewArea();
+    const forced = shape === "auto" ? null : shape;
+    const area =
+      forced === "landscape" ? { w: 1920, h: 1080 } : forced === "portrait" ? { w: 1080, h: 1920 } : view;
+    const p = planForDisplay(optical, payload, {
       totalBytes: payload.length,
       requested: profile,
-      baseWidth: base.width,
-      baseHeight: base.height,
       usable: usable ?? undefined,
+      viewW: area.w,
+      viewH: area.h,
     });
     try {
       const s = optical.OpticalSender.create(payload, {
@@ -340,18 +379,12 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
       setPlan(p);
       return s;
     } catch {
-      // The core refused that frame. Full size at the requested quality always
-      // works, and saying nothing would be worse than a slightly emptier frame.
-      const s = optical.OpticalSender.create(payload, { profile, ...base });
-      setPlan({
-        profile,
-        width: base.width,
-        height: base.height,
-        capacity: 0,
-        framesPerPass: 0,
-        fill: 0,
-        shrunk: false,
-      });
+      // The core refused that frame. A full-size one at the requested quality
+      // always builds, and saying nothing would be worse.
+      const fw = area.w >= area.h ? 1920 : 1080;
+      const fh = area.w >= area.h ? 1080 : 1920;
+      const s = optical.OpticalSender.create(payload, { profile, width: fw, height: fh });
+      setPlan({ ...p, profile, width: fw, height: fh, cellPx: 0, screenPitch: 0 });
       return s;
     }
   }
@@ -360,40 +393,18 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
    * How many pictures is one full pass through the payload?
    *
    * This CANNOT be discovered by watching the frames: a real fountain code
-   * never repeats itself, so there is no cycle to detect. It has to come from
-   * the engine's own per-frame capacity. Falls back to detecting a repeat,
-   * which is only meaningful for the mock's round-robin stand-in.
+   * never repeats itself, so there is no cycle to detect. It comes from the
+   * engine's own per-frame capacity.
    */
   function passLength(totalBytes: number): number {
-    const base = dims();
-    const p = planFrame(optical, {
+    const view = viewArea();
+    return planForDisplay(optical, new Uint8Array(Math.min(totalBytes, 4096)), {
       totalBytes,
       requested: profile,
-      baseWidth: base.width,
-      baseHeight: base.height,
       usable: usable ?? undefined,
-    });
-    return p.framesPerPass;
-  }
-
-  function dims() {
-    const resolved = shape === "auto" ? deviceShape() : shape;
-    if (resolved === "landscape") return { width: 1920, height: 1080 };
-    if (resolved === "portrait") return { width: 1080, height: 1920 };
-    // "match": the largest 16:9 (or 9:16) box that fits this display, in real
-    // device pixels, so the browser never resamples the grid on its way to the
-    // panel.
-    const dpr = window.devicePixelRatio || 1;
-    const aw = Math.floor((stageRef.current?.clientWidth ?? window.innerWidth) * dpr);
-    const ah = Math.floor(window.innerHeight * dpr);
-    if (deviceShape() === "portrait") {
-      let h = Math.max(960, Math.min(ah, Math.floor((aw * 16) / 9)));
-      h -= h % 2;
-      return { width: Math.floor((h * 9) / 16), height: h };
-    }
-    let w = Math.max(960, Math.min(aw, Math.floor((ah * 16) / 9)));
-    w -= w % 2;
-    return { width: w, height: Math.floor((w * 9) / 16) };
+      viewW: view.w,
+      viewH: view.h,
+    }).framesPerPass;
   }
 
   function rebuildSender() {
@@ -413,15 +424,20 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
     setStill(false);
     setFramesPerPass(0);
     onSendingChange(true);
+    runLoop(s);
+  }
+
+  /** The broadcast loop itself, separated so a replan can restart it. */
+  function runLoop(s: OpticalSender) {
     const t0 = performance.now();
     let frames = 0;
-    let firstHash = -1;
     const known = plan?.framesPerPass || passLength(s.manifest().totalBytes);
-    let period = known;
     setFramesPerPass(known);
-    if (known === 1) setStill(true);
-    // A payload that is only a few pictures long is far easier to capture if
-    // each one is held on screen instead of flickering past in 16 ms.
+    setStill(known === 1);
+    /**
+     * A payload only a few pictures long is far easier to capture if each one
+     * is held on screen instead of flickering past in 16 ms.
+     */
     const holdMs = known > 0 && known <= 6 ? 400 : 0;
     let lastDrawn = 0;
     const window1s: number[] = [];
@@ -448,24 +464,6 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
         // Zero-copy: the ImageData is a view straight into wasm linear memory.
         const view = new Uint8ClampedArray(optical.memory.buffer as ArrayBuffer, f.ptr, f.len);
         ctx.putImageData(new ImageData(view, f.width, f.height), 0, 0);
-      }
-
-      // Detect when the endless stream has come all the way round. A payload
-      // small enough to fit one frame has period 1, and animating a single
-      // still image would only make it harder to capture.
-      if (period === 0 && frames < 4096 && !optical.frameCapacity) {
-        const h = frameHash(f.ptr, f.len);
-        if (firstHash < 0) {
-          firstHash = h;
-        } else if (h === firstHash) {
-          period = frames;
-          setFramesPerPass(period);
-          if (period === 1) {
-            setStill(true);
-            rafRef.current = 0;
-            return; // the frame on screen IS the whole transmission
-          }
-        }
       }
 
       frames++;
@@ -514,27 +512,42 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
     bytesRef.current = payload;
     setTestPattern(true);
     setStill(true);
-    const s = buildSender(payload);
-    senderRef.current = s;
-    setManifest(s.manifest());
     setPhase("sending");
     onSendingChange(true);
-    stopLoop();
-    // One frame, then nothing. No animation at all.
-    requestAnimationFrame(() => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const f = s.nextFrame();
-      canvas.width = f.width;
-      canvas.height = f.height;
-      const ctx = canvas.getContext("2d", { alpha: false });
-      if (!ctx) return;
-      const view = new Uint8ClampedArray(optical.memory.buffer as ArrayBuffer, f.ptr, f.len);
-      ctx.putImageData(new ImageData(view, f.width, f.height), 0, 0);
-      setStat({ frames: 1, fps: 0, chunk: 0, chunkCount: 1, elapsed: 0 });
-      setFramesPerPass(1);
-    });
     enterImmersive();
+    // The replan effect that fires on entering fullscreen renders it, so the
+    // pattern is planned for the screen it will actually be shown on.
+  }
+
+  /**
+   * Back to the setup screen without leaving fullscreen and hunting for
+   * controls. Stop halts the broadcast; Reset halts it AND puts the
+   * pick-a-payload screen back in front of you.
+   */
+  function reset() {
+    stopLoop();
+    setTestPattern(false);
+    setStill(false);
+    setImmersive(false);
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+    onSendingChange(false);
+    setPhase("idle");
+    setManifest(null);
+    setPlan(null);
+    setFramesPerPass(0);
+    senderRef.current?.free();
+    senderRef.current = null;
+  }
+
+  /** Rebuild for the current display area and carry on broadcasting. */
+  function replanAndRestart() {
+    if (!bytesRef.current) return;
+    const before = plan;
+    stopLoop();
+    const s = rebuildSender();
+    if (!s) return;
+    void before;
+    runLoop(s);
   }
 
   function stop() {
@@ -775,8 +788,9 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
               <span className="tag" title="internal profile id">
                 {plan.profile}
               </span>{" "}
-              carries {bytes(plan.capacity)} per picture, {Math.round(plan.fill * 100)}% of the
-              frame drawn on.{" "}
+              carries {bytes(plan.capacity)} per picture. Blocks land about{" "}
+              <b>{Math.round(plan.screenPitch)} screen pixels</b> across, filling{" "}
+              {Math.round(plan.screenCoverage * 100)}% of the display.{" "}
               {plan.shrunk
                 ? "Shrunk to fit, then blown up to fill the screen — so the blocks are as big and as readable as they can be."
                 : `${int(plan.framesPerPass)} pictures per pass.`}
@@ -916,6 +930,11 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
               <span>
                 <b>{int(stat.frames)}</b> sent
               </span>
+              {plan && plan.screenPitch > 0 && (
+                <span data-stat="pitch">
+                  <b>{Math.round(plan.screenPitch)}px</b> blocks
+                </span>
+              )}
               <span>
                 <b>{duration(stat.elapsed)}</b> elapsed
               </span>
@@ -928,7 +947,7 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
           </div>
         )}
 
-        <div className="canvas-wrap">
+        <div className="canvas-wrap" ref={wrapRef}>
           {/* Nothing is ever drawn on top of this canvas. Every pixel is payload. */}
           <canvas ref={canvasRef} width={1920} height={1080} />
         </div>
@@ -937,6 +956,9 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
           <div className="strip strip-bottom">
             <button className="btn stop" onClick={stop}>
               STOP
+            </button>
+            <button className="btn ghost" onClick={reset}>
+              Reset
             </button>
             <div className="strip-hint">
               Watch the other device. This side cannot see progress.
@@ -984,6 +1006,9 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
                 <div className="v small">{manifest?.displayCode ?? "—"}</div>
               </div>
             </div>
+            <button className="btn" onClick={reset}>
+              Reset
+            </button>
             <button className="btn primary" onClick={enterImmersive}>
               Full screen
             </button>

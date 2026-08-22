@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openApp, sendText, startSending } from "./helpers";
+import { assertNoScrollbar, openApp, sendText, startSending } from "./helpers";
 
 /**
  * The reported bug, from a phone: in fullscreen send mode the status was not
@@ -139,7 +139,7 @@ test.describe("fullscreen send on a phone", () => {
     await expect(page.locator(".stage.immersive")).toHaveCount(0);
 
     await enterFullscreen(page);
-    await page.locator(".stage.immersive .btn.ghost").click();
+    await page.getByRole("button", { name: "Leave full screen" }).click();
     await expect(page.locator(".stage.immersive")).toHaveCount(0);
     await expect(page.locator("body")).not.toHaveClass(/immersive-open/);
   });
@@ -151,11 +151,7 @@ test.describe("fullscreen send on a phone", () => {
 
     // Nothing may overflow sideways at any point in the flow.
     const noSideScroll = async (where: string) => {
-      const m = await page.evaluate(() => ({
-        w: document.documentElement.scrollWidth,
-        vw: window.innerWidth,
-      }));
-      expect(m.w, `${where}: horizontal overflow`).toBeLessThanOrEqual(m.vw + 1);
+      await assertNoScrollbar(page, where, "horizontal");
     };
 
     await noSideScroll("empty send view");
@@ -292,6 +288,8 @@ test.describe("receive capture mode on a phone", () => {
     const after = await hud(page);
     expect(after.scrollY, "the page scrolled").toBe(0);
     expect(after.scrollH).toBeLessThanOrEqual(after.vh + 1);
+    // A scrollbar would steal viewport width and change the frame plan.
+    await assertNoScrollbar(page, "capture mode");
 
     const rows = LIVE_STATS.map(
       (n) => `${n} @${Math.round(m.values[n]!.box!.top)}`,
