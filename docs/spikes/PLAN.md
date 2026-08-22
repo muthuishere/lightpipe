@@ -321,6 +321,7 @@ integration step, and the 1 GB timings above exclude fountain cost.
 decoder. Divergence between simulated and real SER is recorded and treated as a
 simulator bug.
 **Human required:** yes — first spike that needs a camera.
+**Procedure:** [`S6-CAPTURE-GUIDE.md`](S6-CAPTURE-GUIDE.md) — no code needed, ~10 minutes.
 **ADRs:** 0009
 
 ## S7 — wasm + Node harness · STATUS: PENDING
