@@ -79,6 +79,27 @@ tasks:
       - mkdir -p {{.ARTIFACTS}}
       - cargo run --release --bin spike5
 
+  e2e:
+    desc: 'End-to-end: file -> frames -> simulated camera -> file, real KB/s per camera'
+    cmds:
+      - mkdir -p {{.ARTIFACTS}}
+      - cargo run --release --bin e2e
+
+  wasm:build:
+    desc: 'Build the wasm bundle'
+    cmds:
+      - cd crates/wasm && wasm-pack build --target web --out-dir ../../app/src/wasm
+
+  wasm:test:
+    desc: 'S7: run the core test suite through wasm in Node (no browser)'
+    cmds:
+      - node harness/run.mjs
+
+  app:dev:
+    desc: 'S8: run the React app'
+    cmds:
+      - cd app && npm run dev
+
   adr:
     desc: List architecture decisions
     cmds:
