@@ -28,6 +28,13 @@ see ADR-0006) and an initial **rate-pick digit**.
 Integrity is proven by rendering a BLAKE3 hash as a 6-character code on both screens
 for the human to compare. Stronger than any ACK scheme, with zero protocol.
 
+## Refined by ADR-0016 (2026-08-22)
+This ADR's "no back-channel" holds for the **steady-state transfer**. It did not
+consider a **one-time handshake** before any data frame — a single round-trip that
+validates the receiver can see the code and, at the end, lets the receiver signal
+"done, stop." That does not touch throughput and fixes the blind-sender experience.
+See [ADR-0016](0016-validation-handshake.md).
+
 ## Consequences
 - The receiver's screen is free for a real UI: alignment guide, progress, error rate.
 - We lose *live* adaptive rate control. ADR-0011 recovers it a different way.
