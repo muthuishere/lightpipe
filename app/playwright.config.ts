@@ -12,6 +12,12 @@ import { defineConfig, devices } from "@playwright/test";
  * and `getDisplayMedia` are all exercised, and Chromium is the one engine where
  * the whole set is available headless.
  */
+const MEDIA_ARGS = [
+  "--use-fake-device-for-media-stream",
+  "--use-fake-ui-for-media-stream",
+  "--auto-accept-this-tab-capture",
+];
+
 export default defineConfig({
   testDir: "./tests",
   fullyParallel: false,
@@ -34,20 +40,58 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
+      testMatch: /app\.spec\.ts/,
       use: {
         ...devices["Desktop Chrome"],
         permissions: ["camera"],
         launchOptions: {
-          args: [
-            // A deterministic synthetic camera, so "camera" paths are reachable
-            // without hardware. It shows Chromium's rolling test pattern, which
-            // is NOT a valid code — useful for the fail-loud test, not for a
-            // successful decode.
-            "--use-fake-device-for-media-stream",
-            "--use-fake-ui-for-media-stream",
-            "--auto-accept-this-tab-capture",
-          ],
+          // A deterministic synthetic camera, so "camera" paths are reachable
+          // without hardware. It shows Chromium's rolling test pattern, which
+          // is NOT a valid code — useful for the fail-loud test, not for a
+          // successful decode.
+          args: MEDIA_ARGS,
         },
+      },
+    },
+    // Phone-sized viewports. The reported bug was mobile-only: the send view's
+    // status sat below the fold in fullscreen, and on iOS there is no
+    // Fullscreen API for a non-video element at all.
+    {
+      name: "iphone",
+      testMatch: /mobile\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 390, height: 844 },
+        deviceScaleFactor: 3,
+        isMobile: true,
+        hasTouch: true,
+        launchOptions: { args: MEDIA_ARGS },
+      },
+    },
+    {
+      name: "android",
+      testMatch: /mobile\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 360, height: 800 },
+        deviceScaleFactor: 3,
+        isMobile: true,
+        hasTouch: true,
+        launchOptions: { args: MEDIA_ARGS },
+      },
+    },
+    // A phone on its side: no room for horizontal strips, so the layout has to
+    // move the status into the pillarbox at the sides instead.
+    {
+      name: "iphone-landscape",
+      testMatch: /mobile\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 844, height: 390 },
+        deviceScaleFactor: 3,
+        isMobile: true,
+        hasTouch: true,
+        launchOptions: { args: MEDIA_ARGS },
       },
     },
   ],

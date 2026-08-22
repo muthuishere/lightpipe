@@ -39,12 +39,16 @@ const SHAPES: Array<{ id: Shape; label: string; caption: string }> = [
   { id: "match", label: "Fill this screen exactly", caption: "" },
 ];
 
-/** What "auto" resolves to. A touch device is almost certainly held upright. */
+/**
+ * What "auto" resolves to: the shape of the screen doing the sending.
+ *
+ * Orientation alone, deliberately. An earlier version also treated any touch
+ * device as portrait, which put a portrait frame on a phone held sideways —
+ * letterboxing it into half the screen, which is exactly the waste the shape
+ * control exists to avoid.
+ */
 function deviceShape(): "landscape" | "portrait" {
-  const coarse =
-    typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
-  const tall = window.innerHeight > window.innerWidth;
-  return coarse || tall ? "portrait" : "landscape";
+  return window.innerHeight > window.innerWidth ? "portrait" : "landscape";
 }
 
 interface Speed {
@@ -105,7 +109,20 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
   const [note, setNote] = useState<string | null>(null);
   const [profile, setProfile] = useState<Profile>("auto");
   const [shape, setShape] = useState<Shape>("auto");
-  const [fullscreen, setFullscreen] = useState(false);
+  /**
+   * Fullscreen is a CSS MODE, not an API call.
+   *
+   * `Element.requestFullscreen()` does not exist for non-video elements in iOS
+   * Safari, so a button that depends on it does nothing at all on an iPhone —
+   * which is where this was reported from. A fixed-position container works
+   * identically everywhere, needs no user-gesture permission, and (the reason
+   * that matters here) gives us full control of the layout so status can live
+   * in the letterbox dead space instead of on top of the code.
+   *
+   * The real API is layered on top where it exists, purely to hide browser
+   * chrome as well.
+   */
+  const [immersive, setImmersive] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [still, setStill] = useState(false);
   const [framesPerPass, setFramesPerPass] = useState(0);
@@ -153,11 +170,26 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
     return () => window.clearTimeout(id);
   }, []);
 
+  // Nothing scrolls behind the immersive view, and Escape always gets out.
   useEffect(() => {
-    const onFs = () => setFullscreen(Boolean(document.fullscreenElement));
+    if (!immersive) return;
+    document.body.classList.add("immersive-open");
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") exitImmersive();
+    };
+    // If the user leaves the browser's own fullscreen (Esc on desktop), leave
+    // our CSS mode with it so the two cannot disagree.
+    const onFs = () => {
+      if (!document.fullscreenElement) setImmersive(false);
+    };
+    window.addEventListener("keydown", onKey);
     document.addEventListener("fullscreenchange", onFs);
-    return () => document.removeEventListener("fullscreenchange", onFs);
-  }, []);
+    return () => {
+      document.body.classList.remove("immersive-open");
+      window.removeEventListener("keydown", onKey);
+      document.removeEventListener("fullscreenchange", onFs);
+    };
+  }, [immersive]);
 
   /** Load bytes into the sender. One path — every affordance ends up here. */
   const load = useCallback(
@@ -450,12 +482,25 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
     rafRef.current = requestAnimationFrame(tick);
   }
 
+  function enterImmersive() {
+    setImmersive(true);
+    // Progressive enhancement only. Undefined on iOS Safari for non-video
+    // elements, and rejected without a gesture elsewhere — neither matters,
+    // because the CSS mode is what delivers the layout.
+    void stageRef.current?.requestFullscreen?.().catch(() => undefined);
+  }
+
+  function exitImmersive() {
+    setImmersive(false);
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+  }
+
   function stop() {
     stopLoop();
     setPhase("ready");
     setStill(false);
     onSendingChange(false);
-    if (document.fullscreenElement) void document.exitFullscreen();
+    exitImmersive();
   }
 
   const sending = phase === "sending";
@@ -792,58 +837,103 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
         </div>
       )}
 
-      <div className={`stage${fullscreen ? " fs" : ""}`} ref={stageRef} hidden={!sending}>
-        {/* Nothing is ever drawn on top of this canvas. Every pixel is payload. */}
-        <canvas ref={canvasRef} width={1920} height={1080} />
-        <div className="controls">
-          <button className="btn stop" onClick={stop}>
-            STOP
-          </button>
-          <div className="stats" style={{ flex: 1, minWidth: 320 }}>
-            <div className="stat">
-              <div className="k">pictures shown</div>
-              <div className="v">{int(stat.frames)}</div>
+      <div
+        className={`stage${immersive ? " immersive" : ""}`}
+        ref={stageRef}
+        hidden={!sending}
+      >
+        {/* THE LETTERBOX STRIPS.
+            The frame has a fixed aspect and the viewport almost never matches,
+            so there is always dead space beside or above the code. Status lives
+            there. Nothing is ever drawn ON the grid — an overlay would corrupt
+            the channel. The strips are flex-shrink:0, so if the aspects do
+            happen to match, the code gives up a little area rather than the
+            status disappearing. */}
+        {immersive && (
+          <div className="strip strip-top">
+            <div className="strip-code" title="compare this with the receiving screen">
+              {manifest?.displayCode ?? "—"}
             </div>
-            <div className="stat">
-              <div className="k">per second</div>
-              <div className="v">{stat.fps}</div>
-            </div>
-            <div className="stat">
-              <div className="k">picture</div>
-              <div className="v small">
-                {plan ? `${plan.width}x${plan.height}` : "—"}
-              </div>
-            </div>
-            <div className="stat">
-              <div className="k">one full pass</div>
-              <div className="v small">
-                {framesPerPass ? `${int(framesPerPass)} pictures` : "—"}
-              </div>
-            </div>
-            <div className="stat">
-              <div className="k">on chunk</div>
-              <div className="v">
-                {stat.chunk + 1}/{stat.chunkCount || manifest?.chunkCount || 1}
-              </div>
-            </div>
-            <div className="stat">
-              <div className="k">elapsed</div>
-              <div className="v">{duration(stat.elapsed)}</div>
-            </div>
-            <div className="stat">
-              <div className="k">display code</div>
-              <div className="v small">{manifest?.displayCode ?? "—"}</div>
+            <div className="strip-facts">
+              <span>
+                <b>{int(stat.frames)}</b> sent
+              </span>
+              <span>
+                <b>{duration(stat.elapsed)}</b> elapsed
+              </span>
+              {framesPerPass > 0 && (
+                <span>
+                  <b>{int(framesPerPass)}</b> per pass
+                </span>
+              )}
             </div>
           </div>
-          {!fullscreen && (
-            <button className="btn" onClick={() => void stageRef.current?.requestFullscreen?.()}>
+        )}
+
+        <div className="canvas-wrap">
+          {/* Nothing is ever drawn on top of this canvas. Every pixel is payload. */}
+          <canvas ref={canvasRef} width={1920} height={1080} />
+        </div>
+
+        {immersive ? (
+          <div className="strip strip-bottom">
+            <button className="btn stop" onClick={stop}>
+              STOP
+            </button>
+            <div className="strip-hint">
+              Watch the other device. This side cannot see progress.
+            </div>
+            <button className="btn ghost exit" onClick={exitImmersive} aria-label="Leave full screen">
+              ✕
+            </button>
+          </div>
+        ) : (
+          <div className="controls">
+            <button className="btn stop" onClick={stop}>
+              STOP
+            </button>
+            <div className="stats" style={{ flex: 1, minWidth: 280 }}>
+              <div className="stat">
+                <div className="k">pictures shown</div>
+                <div className="v">{int(stat.frames)}</div>
+              </div>
+              <div className="stat">
+                <div className="k">per second</div>
+                <div className="v">{stat.fps}</div>
+              </div>
+              <div className="stat">
+                <div className="k">picture</div>
+                <div className="v small">{plan ? `${plan.width}x${plan.height}` : "—"}</div>
+              </div>
+              <div className="stat">
+                <div className="k">one full pass</div>
+                <div className="v small">
+                  {framesPerPass ? `${int(framesPerPass)} pictures` : "—"}
+                </div>
+              </div>
+              <div className="stat">
+                <div className="k">on chunk</div>
+                <div className="v">
+                  {stat.chunk + 1}/{stat.chunkCount || manifest?.chunkCount || 1}
+                </div>
+              </div>
+              <div className="stat">
+                <div className="k">elapsed</div>
+                <div className="v">{duration(stat.elapsed)}</div>
+              </div>
+              <div className="stat">
+                <div className="k">display code</div>
+                <div className="v small">{manifest?.displayCode ?? "—"}</div>
+              </div>
+            </div>
+            <button className="btn primary" onClick={enterImmersive}>
               Full screen
             </button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
-      {sending && !fullscreen && still && (
+      {sending && !immersive && still && (
         <div className="notice ok" style={{ marginTop: 16 }}>
           <strong>It fits in one picture. Nothing is racing past.</strong>
           The whole thing — {bytes(manifest?.totalBytes ?? 0)} — fits in a single picture, so the
@@ -854,7 +944,7 @@ export default function Sender({ canvasRef, onSendingChange, active }: SenderPro
         </div>
       )}
 
-      {sending && !fullscreen && !still && (
+      {sending && !immersive && !still && (
         <div className="notice" style={{ marginTop: 16 }}>
           <strong>Watch the receiving device — this side cannot see progress.</strong>
           Nothing comes back the other way, so this screen genuinely does not know whether anyone
